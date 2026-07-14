@@ -1,0 +1,15 @@
+export const TELEGRAM_CONFIG = {
+  BOT_TOKEN: import.meta.env.VITE_TELEGRAM_BOT_TOKEN,
+};
+
+export const TELEGRAM_GROUPS = {
+  AIML: "-5281369270",
+  CSE: "-5520023183",
+  ECE: "-5494111938",
+  EEE: "-5296368715",
+  CIVIL: "-5278808277",
+  MECHANICAL: "-5104471879",
+
+  MBA: "",
+  MCA: "",
+};

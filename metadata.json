@@ -1,0 +1,6 @@
+{
+  "name": "NBKRIST Smart Digital Notice Board",
+  "description": "Smart enterprise-grade Digital Notice Board system for NBKR Institute of Science and Technology featuring an interactive admin management portal and a full-screen Kiosk department display screen.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
