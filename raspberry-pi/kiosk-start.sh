@@ -1,15 +1,16 @@
 #!/bin/bash
 # ==============================================================================
-# NBKRIST SMART DIGITAL NOTICE BOARD - KIOSK START SCRIPT
+# NBKRIST SMART DIGITAL NOTICE BOARD - RASPBERRY PI KIOSK LAUNCHER
 # ==============================================================================
-# Configurable launcher for Chromium fullscreen kiosk mode.
-# Point this to your deployed domain. Never hard-code localhost in production.
+# Dedicated launcher for Chromium fullscreen kiosk mode.
+# Directly opens the deployed Netlify frontend in Kiosk Appliance mode (?mode=kiosk).
+# Requires NO admin login or user interaction.
 # ==============================================================================
 
-# 1. Configuration (Set your campus domain or export in /etc/environment)
-APP_URL="${APP_URL:-https://YOUR-DEPLOYED-DOMAIN.com}"
+# 1. Configuration (Set your Netlify URL or configure in /etc/nbkrist-kiosk.env)
+APP_URL="${APP_URL:-https://YOUR-NETLIFY-DOMAIN.netlify.app}"
 DEPARTMENT="${DEPARTMENT:-ALL}"
-DEVICE_ID="${DEVICE_ID:-NBKR-CAMPUS-01}"
+DEVICE_ID="${DEVICE_ID:-NBKR-PI-01}"
 
 # Read environment file if present
 if [ -f "/etc/nbkrist-kiosk.env" ]; then
@@ -23,13 +24,18 @@ if [ -f "$HOME/.nbkrist-kiosk.env" ]; then
 fi
 
 # Construct production Kiosk appliance URL
+# Normal devices open: https://YOUR-NETLIFY-DOMAIN.netlify.app/
+# Raspberry Pi opens:   https://YOUR-NETLIFY-DOMAIN.netlify.app/?mode=kiosk
 KIOSK_URL="${APP_URL}/?mode=kiosk&dept=${DEPARTMENT}&deviceId=${DEVICE_ID}"
 
-echo "[+] Starting NBKRIST Smart Digital Signage Kiosk..."
-echo "[+] Device: $DEVICE_ID | Department: $DEPARTMENT"
-echo "[+] Target URL: $KIOSK_URL"
+echo "[+] ========================================================"
+echo "[+] Starting NBKRIST Smart Digital Notice Board (Kiosk Mode)"
+echo "[+] Device ID   : $DEVICE_ID"
+echo "[+] Department  : $DEPARTMENT"
+echo "[+] Target URL  : $KIOSK_URL"
+echo "[+] ========================================================"
 
-# 2. Prevent screen blanking and disable power saving
+# 2. Prevent screen blanking and disable monitor power saving
 export DISPLAY="${DISPLAY:-:0}"
 export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 
@@ -53,7 +59,7 @@ if [ -f "$CHROMIUM_PREFS" ]; then
 fi
 
 # 5. Wait for network connectivity (max 20 seconds, proceed to offline cache if offline)
-echo "[+] Checking network..."
+echo "[+] Checking campus network connectivity..."
 COUNTER=0
 while ! ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1 && ! ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; do
   sleep 1
@@ -71,6 +77,7 @@ if ! command -v "$BROWSER" >/dev/null 2>&1; then
 fi
 
 # 7. Launch Chromium in dedicated fullscreen appliance Kiosk mode
+# Disables info bars, translate prompts, crash bubbles, pinch-zoom, and context menus
 exec "$BROWSER" \
   --kiosk \
   --noerrdialogs \

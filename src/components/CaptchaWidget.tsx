@@ -1,153 +1,276 @@
-import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, ShieldCheck, AlertCircle } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { ShieldCheck, AlertCircle, RefreshCw } from "lucide-react";
 
-interface CaptchaWidgetProps {
-  onChallengeChange?: (token: string, input: string) => void;
-  userInput: string;
-  onUserInputChange: (val: string) => void;
-  disabled?: boolean;
+declare global {
+  interface Window {
+    grecaptcha?: {
+      render: (
+        container: HTMLElement | string,
+        parameters: {
+          sitekey: string;
+          theme?: "dark" | "light";
+          size?: "normal" | "compact";
+          tabindex?: number;
+          callback?: (token: string) => void;
+          "expired-callback"?: () => void;
+          "error-callback"?: (error?: any) => void;
+        }
+      ) => number;
+      reset: (widgetId?: number) => void;
+      getResponse: (widgetId?: number) => string;
+      ready: (callback: () => void) => void;
+    };
+    onGoogleReCaptchaLoad?: () => void;
+  }
 }
 
-export default function CaptchaWidget({
-  onChallengeChange,
-  userInput,
-  onUserInputChange,
-  disabled = false,
-}: CaptchaWidgetProps) {
-  const [captchaImage, setCaptchaImage] = useState<string>("");
-  const [captchaToken, setCaptchaToken] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface CaptchaWidgetProps {
+  onVerify?: (token: string) => void;
+  onExpire?: () => void;
+  onError?: (err?: any) => void;
+  disabled?: boolean;
+  className?: string;
+  // Backward compatibility props
+  onChallengeChange?: (token: string, input: string) => void;
+  userInput?: string;
+  onUserInputChange?: (val: string) => void;
+}
 
-  const fetchNewChallenge = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await fetch("/api/auth/captcha");
-      if (!res.ok) {
-        throw new Error(`Failed to load security challenge (${res.status})`);
+// Fallback to official Google reCAPTCHA v2 Checkbox test site key for localhost testing
+// Production key should be provided in VITE_RECAPTCHA_SITE_KEY environment variable
+const FALLBACK_TEST_SITE_KEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI";
+
+export default function CaptchaWidget({
+  onVerify,
+  onExpire,
+  onError,
+  disabled = false,
+  className = "",
+  onChallengeChange,
+  onUserInputChange,
+}: CaptchaWidgetProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<number | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isVerified, setIsVerified] = useState(false);
+
+  const siteKey =
+    import.meta.env.VITE_RECAPTCHA_SITE_KEY &&
+    import.meta.env.VITE_RECAPTCHA_SITE_KEY.trim() !== "" &&
+    !import.meta.env.VITE_RECAPTCHA_SITE_KEY.includes("YOUR_")
+      ? import.meta.env.VITE_RECAPTCHA_SITE_KEY.trim()
+      : FALLBACK_TEST_SITE_KEY;
+
+  const handleVerify = useCallback(
+    (token: string) => {
+      setIsVerified(true);
+      setLoadError(null);
+      if (onVerify) {
+        onVerify(token);
       }
-      const data = await res.json();
-      setCaptchaToken(data.captchaToken);
-      setCaptchaImage(data.captchaImage);
-      onUserInputChange("");
       if (onChallengeChange) {
-        onChallengeChange(data.captchaToken, "");
+        onChallengeChange(token, token);
       }
-    } catch (err: any) {
-      console.warn("CAPTCHA challenge fetch error:", err);
-      setError("Failed to load security challenge. Please click reload.");
-    } finally {
-      setLoading(false);
+      if (onUserInputChange) {
+        onUserInputChange(token);
+      }
+    },
+    [onVerify, onChallengeChange, onUserInputChange]
+  );
+
+  const handleExpire = useCallback(() => {
+    setIsVerified(false);
+    if (onExpire) {
+      onExpire();
     }
-  }, [onChallengeChange, onUserInputChange]);
+    if (onVerify) {
+      onVerify("");
+    }
+    if (onChallengeChange) {
+      onChallengeChange("", "");
+    }
+    if (onUserInputChange) {
+      onUserInputChange("");
+    }
+  }, [onExpire, onVerify, onChallengeChange, onUserInputChange]);
+
+  const handleWidgetError = useCallback(
+    (err?: any) => {
+      console.warn("Google reCAPTCHA widget error:", err);
+      setLoadError("reCAPTCHA failed to connect. Please check your network or site key.");
+      if (onError) {
+        onError(err);
+      }
+    },
+    [onError]
+  );
+
+  const renderRecaptcha = useCallback(() => {
+    if (!containerRef.current || !window.grecaptcha?.render) return;
+
+    try {
+      // If already rendered inside this container, reset instead of re-rendering
+      if (widgetIdRef.current !== null) {
+        window.grecaptcha.reset(widgetIdRef.current);
+        return;
+      }
+
+      containerRef.current.innerHTML = "";
+      const id = window.grecaptcha.render(containerRef.current, {
+        sitekey: siteKey,
+        theme: "dark",
+        callback: handleVerify,
+        "expired-callback": handleExpire,
+        "error-callback": handleWidgetError,
+      });
+
+      widgetIdRef.current = id;
+      setIsLoaded(true);
+      setLoadError(null);
+    } catch (err: any) {
+      console.warn("reCAPTCHA render notice:", err);
+      // In case of error (e.g., container already has widget)
+      setIsLoaded(true);
+    }
+  }, [siteKey, handleVerify, handleExpire, handleWidgetError]);
 
   useEffect(() => {
-    fetchNewChallenge();
-  }, [fetchNewChallenge]);
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.toUpperCase();
-    onUserInputChange(val);
-    if (onChallengeChange) {
-      onChallengeChange(captchaToken, val);
+    // If window.grecaptcha is already available on the page
+    if (window.grecaptcha && window.grecaptcha.render) {
+      renderRecaptcha();
+      return;
     }
-  };
+
+    // Set up global callback for when Google script finishes loading
+    window.onGoogleReCaptchaLoad = () => {
+      renderRecaptcha();
+    };
+
+    // Inject Google reCAPTCHA script if not already present
+    const SCRIPT_ID = "google-recaptcha-v2-script";
+    let script = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+
+    if (!script) {
+      script = document.createElement("script");
+      script.id = SCRIPT_ID;
+      script.src = "https://www.google.com/recaptcha/api.js?onload=onGoogleReCaptchaLoad&render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.onerror = () => {
+        setLoadError("Could not load Google reCAPTCHA. Please check your internet connection.");
+      };
+      document.head.appendChild(script);
+    } else if (window.grecaptcha) {
+      // Script tag exists, wait for ready
+      window.grecaptcha.ready?.(() => {
+        renderRecaptcha();
+      });
+    }
+
+    return () => {
+      // Clean up on unmount if needed
+      if (widgetIdRef.current !== null && window.grecaptcha?.reset) {
+        try {
+          window.grecaptcha.reset(widgetIdRef.current);
+        } catch {
+          // ignore cleanup reset errors
+        }
+      }
+    };
+  }, [renderRecaptcha]);
 
   return (
-    <div className="space-y-2 select-none" id="captcha-container">
+    <div className={`space-y-2 select-none ${className}`} id="captcha-container">
       <div className="flex items-center justify-between text-xs text-slate-400 font-medium">
-        <label htmlFor="captcha-input" className="flex items-center gap-1.5 text-slate-300">
+        <label className="flex items-center gap-1.5 text-slate-300">
           <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Anti-Bot Verification</span>
+          <span>Security Verification</span>
         </label>
-        <span className="text-[10px] text-slate-500 font-mono">Case-insensitive</span>
+        <span className="text-[10px] text-slate-500 font-mono">Google reCAPTCHA v2</span>
       </div>
 
-      <div className="flex items-center gap-2">
-        {/* Anti-bot Visual Distorted Canvas */}
-        <div className="relative flex-shrink-0 h-12 bg-slate-950 border border-slate-700/80 rounded-lg overflow-hidden flex items-center justify-center p-0.5">
-          {loading ? (
-            <div className="w-[160px] h-11 flex items-center justify-center gap-1.5 text-slate-400 text-xs font-mono">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-              <span>Generating...</span>
-            </div>
-          ) : captchaImage ? (
-            <img
-              src={captchaImage}
-              alt="Security CAPTCHA Challenge"
-              className="h-full w-auto object-contain rounded"
-              referrerPolicy="no-referrer"
-            />
-          ) : (
-            <div className="w-[160px] h-11 flex items-center justify-center text-xs text-rose-400 px-2 text-center">
-              Unable to load
-            </div>
-          )}
-        </div>
+      <div className="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-950/70 border border-slate-800 min-h-[86px] overflow-hidden">
+        {!isLoaded && !loadError && (
+          <div className="flex items-center gap-2 py-4 text-xs text-slate-400 font-mono">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+            <span>Loading reCAPTCHA verification...</span>
+          </div>
+        )}
 
-        {/* Reload button */}
-        <button
-          type="button"
-          id="captcha-refresh-btn"
-          onClick={fetchNewChallenge}
-          disabled={loading || disabled}
-          title="Request a new CAPTCHA challenge"
-          className="p-3 bg-slate-800 hover:bg-slate-750 active:bg-slate-700 disabled:opacity-50 text-slate-300 hover:text-white border border-slate-700/80 rounded-lg transition flex items-center justify-center"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin text-indigo-400" : ""}`} />
-        </button>
-
-        {/* Input box */}
-        <input
-          id="captcha-input"
-          type="text"
-          maxLength={6}
-          autoComplete="off"
-          disabled={disabled || loading}
-          placeholder="Code"
-          value={userInput}
-          onChange={handleInputChange}
-          className="flex-1 min-w-[90px] h-12 px-3 bg-slate-850 border border-slate-700 text-white font-mono font-bold tracking-widest text-center text-base rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+        <div
+          ref={containerRef}
+          id="recaptcha-element"
+          className={`${disabled ? "pointer-events-none opacity-50" : ""} flex justify-center w-full`}
         />
-      </div>
 
-      {error && (
-        <div className="flex items-center gap-1 text-[11px] text-rose-400">
-          <AlertCircle className="w-3 h-3" />
-          <span>{error}</span>
-        </div>
-      )}
+        {loadError && (
+          <div className="flex items-center gap-1.5 text-[11px] text-rose-400 mt-2 px-2 py-1 bg-rose-950/40 border border-rose-800/40 rounded w-full">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>{loadError}</span>
+          </div>
+        )}
+
+        {isVerified && (
+          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-semibold mt-1">
+            <ShieldCheck className="w-3 h-3" />
+            <span>Verification Confirmed</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 /**
- * Server-side anti-bot verification helper
+ * Backend verification helper that calls the backend /api/auth/captcha/verify endpoint
+ * using VITE_BACKEND_URL (configured for Netlify/production).
  */
-export async function verifyCaptchaChallenge(captchaToken: string, userInput: string): Promise<{ success: boolean; verificationToken?: string; error?: string }> {
-  if (!captchaToken || !userInput.trim()) {
-    return { success: false, error: "Please enter the security verification code." };
+export async function verifyCaptchaWithBackend(recaptchaToken: string): Promise<{ success: boolean; error?: string }> {
+  if (!recaptchaToken || !recaptchaToken.trim()) {
+    return { success: false, error: "Please complete the Google reCAPTCHA checkbox." };
   }
 
   try {
-    const res = await fetch("/api/auth/captcha/verify", {
+    const rawBackend = import.meta.env.VITE_BACKEND_URL || "";
+    const backendUrl = rawBackend.replace(/\/+$/, "");
+    const endpoint = backendUrl ? `${backendUrl}/api/auth/captcha/verify` : "/api/auth/captcha/verify";
+
+    const res = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        captchaToken,
-        userInput: userInput.trim(),
-      }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ recaptchaToken: recaptchaToken.trim() }),
     });
 
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) {
-      return { success: false, error: data.error || "Security code verification failed." };
+      return {
+        success: false,
+        error: data.error || "Google reCAPTCHA verification failed. Please try again.",
+      };
     }
 
-    return { success: true, verificationToken: data.verificationToken };
+    return { success: true };
   } catch (err: any) {
-    console.warn("CAPTCHA verification network error:", err);
-    return { success: false, error: "Network error validating security code. Please retry." };
+    console.warn("reCAPTCHA backend verification network error:", err);
+    return {
+      success: false,
+      error: "Unable to reach backend verification service. Please verify VITE_BACKEND_URL configuration.",
+    };
   }
 }
+
+// Alias for backward compatibility
+export const verifyCaptchaChallenge = async (
+  tokenOrChallenge: string,
+  _userInput?: string
+): Promise<{ success: boolean; verificationToken?: string; error?: string }> => {
+  const result = await verifyCaptchaWithBackend(tokenOrChallenge);
+  return {
+    success: result.success,
+    verificationToken: tokenOrChallenge,
+    error: result.error,
+  };
+};

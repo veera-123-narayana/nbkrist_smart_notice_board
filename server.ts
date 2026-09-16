@@ -1,177 +1,166 @@
 import express from "express";
+import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import crypto from "crypto";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Anti-bot CAPTCHA cryptographic secret and replay protection store
-const CAPTCHA_SECRET = process.env.CAPTCHA_SECRET || "nbkrist-smart-signage-captcha-key-2026";
-const usedChallengeIds = new Set<string>();
-
-// Periodic cleanup of used challenge IDs to avoid memory leaks
-setInterval(() => {
-  if (usedChallengeIds.size > 5000) {
-    usedChallengeIds.clear();
-  }
-}, 300000);
-
-// Generates an anti-bot distorted SVG challenge with noise lines, dots, and rotated glyphs
-function generateCaptchaSvg(code: string): string {
-  const width = 160;
-  const height = 48;
-  
-  // Random noise lines across the canvas
-  let lines = "";
-  const lineColors = ["#6366f1", "#06b6d4", "#ec4899", "#10b981", "#f59e0b"];
-  for (let i = 0; i < 4; i++) {
-    const x1 = Math.floor(Math.random() * width);
-    const y1 = Math.floor(Math.random() * height);
-    const x2 = Math.floor(Math.random() * width);
-    const y2 = Math.floor(Math.random() * height);
-    lines += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${lineColors[i % lineColors.length]}" stroke-width="1.5" opacity="0.65"/>`;
-  }
-
-  // Noise dots
-  let dots = "";
-  for (let i = 0; i < 30; i++) {
-    const cx = Math.floor(Math.random() * width);
-    const cy = Math.floor(Math.random() * height);
-    const r = (Math.random() * 1.5 + 0.5).toFixed(1);
-    dots += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#94a3b8" opacity="0.4"/>`;
-  }
-
-  // Distorted text characters with random rotation, color, and baseline offset
-  let textElements = "";
-  const chars = code.split("");
-  const startX = 18;
-  const charSpacing = 26;
-  const charColors = ["#f8fafc", "#38bdf8", "#818cf8", "#34d399", "#f472b6"];
-
-  chars.forEach((char, idx) => {
-    const x = startX + idx * charSpacing;
-    const y = 33 + Math.floor(Math.random() * 6 - 3);
-    const rot = Math.floor(Math.random() * 22 - 11);
-    const color = charColors[idx % charColors.length];
-    textElements += `<text x="${x}" y="${y}" font-family="monospace, Courier, sans-serif" font-weight="900" font-size="24" fill="${color}" transform="rotate(${rot}, ${x}, ${y})">${char}</text>`;
-  });
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="background-color: #0b0f19; border-radius: 6px; border: 1px solid #1e293b; user-select: none;">
-    ${lines}
-    ${dots}
-    ${textElements}
-  </svg>`;
-}
+// Google reCAPTCHA v2 Secret Key (Backend-Only, Never Expose to Client)
+// In production, CAPTCHA_SECRET (or RECAPTCHA_SECRET_KEY) must be provided in the server environment
+const CAPTCHA_SECRET = process.env.CAPTCHA_SECRET || process.env.RECAPTCHA_SECRET_KEY;
+// Official Google reCAPTCHA v2 test secret key (always passes) for local development testing
+const DEV_TEST_CAPTCHA_SECRET = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const isProduction = process.env.NODE_ENV === "production";
+
+  // Parse allowed origins from FRONTEND_URL environment variable
+  const allowedOrigins: string[] = [];
+  if (process.env.FRONTEND_URL) {
+    process.env.FRONTEND_URL.split(",")
+      .map((url) => url.trim().replace(/\/+$/, ""))
+      .filter(Boolean)
+      .forEach((url) => allowedOrigins.push(url));
+  }
+
+  // Configure CORS for Netlify frontend integration
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Allow requests with no origin (e.g. mobile apps, curl, Raspberry Pi telemetry agent)
+        if (!origin) return callback(null, true);
+
+        // Normalize origin without trailing slash
+        const cleanOrigin = origin.replace(/\/+$/, "");
+
+        // Match against explicitly configured FRONTEND_URL
+        if (allowedOrigins.includes(cleanOrigin)) {
+          return callback(null, true);
+        }
+
+        // In development mode, allow localhost, 127.0.0.1, and preview environments
+        if (!isProduction) {
+          if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
+            return callback(null, true);
+          }
+          if (cleanOrigin.endsWith(".run.app") || cleanOrigin.endsWith(".netlify.app")) {
+            return callback(null, true);
+          }
+          if (allowedOrigins.length === 0) {
+            return callback(null, true);
+          }
+        }
+
+        return callback(new Error(`CORS blocked request from origin: ${origin}`));
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    })
+  );
 
   app.use(express.json({ limit: "25mb" }));
 
-  // In-memory registry for device health telemetry
+  // In-memory registry for Raspberry Pi device health telemetry
   const deviceHealthRegistry = new Map<string, any>();
 
   // API Health Check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", service: "NBKRIST Smart Digital Notice Board" });
-  });
-
-  // Anti-bot CAPTCHA: Generate new challenge with server-signed HMAC
-  app.get("/api/auth/captcha", (req, res) => {
-    // Alphanumeric chars excluding confusing symbols (0, O, 1, I, l)
-    const charset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    let code = "";
-    for (let i = 0; i < 5; i++) {
-      code += charset.charAt(Math.floor(Math.random() * charset.length));
-    }
-
-    const challengeId = crypto.randomUUID();
-    const timestamp = Date.now();
-
-    // Server-signed HMAC hash of the answer (the client cannot read or tamper with this)
-    const signature = crypto
-      .createHmac("sha256", CAPTCHA_SECRET)
-      .update(`${challengeId}:${code}:${timestamp}`)
-      .digest("hex");
-
-    const captchaToken = `${challengeId}.${timestamp}.${signature}`;
-    const svgContent = generateCaptchaSvg(code);
-    const svgBase64 = `data:image/svg+xml;base64,${Buffer.from(svgContent).toString("base64")}`;
-
-    return res.json({
-      challengeId,
-      captchaToken,
-      captchaImage: svgBase64,
-      expiresInSeconds: 120,
+    res.json({
+      status: "ok",
+      service: "NBKRIST Smart Digital Notice Board Backend",
+      environment: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
     });
   });
 
-  // Anti-bot CAPTCHA: Verify response against server signature
-  app.post("/api/auth/captcha/verify", (req, res) => {
-    const { captchaToken, userInput } = req.body;
+  // Google reCAPTCHA v2 Verification Endpoint
+  app.post("/api/auth/captcha/verify", async (req, res) => {
+    try {
+      const recaptchaToken = req.body.recaptchaToken || req.body.token || req.body.captchaToken;
 
-    if (!captchaToken || !userInput) {
-      return res.status(400).json({ success: false, error: "Please enter the CAPTCHA security code." });
+      if (!recaptchaToken || typeof recaptchaToken !== "string") {
+        return res.status(400).json({
+          success: false,
+          error: "Missing reCAPTCHA verification token. Please complete the security checkbox.",
+        });
+      }
+
+      // In production, enforce that the secret key is provided
+      if (isProduction && !CAPTCHA_SECRET) {
+        console.error("CRITICAL: CAPTCHA_SECRET is not configured in production backend environment.");
+        return res.status(500).json({
+          success: false,
+          error: "Server configuration error: CAPTCHA_SECRET must be configured in environment variables.",
+        });
+      }
+
+      const effectiveSecret = CAPTCHA_SECRET || DEV_TEST_CAPTCHA_SECRET;
+
+      // Verify token with Google reCAPTCHA siteverify API
+      const verifyUrl = "https://www.google.com/recaptcha/api/siteverify";
+      const params = new URLSearchParams();
+      params.append("secret", effectiveSecret);
+      params.append("response", recaptchaToken.trim());
+
+      const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+      if (typeof clientIp === "string") {
+        params.append("remoteip", clientIp.split(",")[0].trim());
+      }
+
+      const googleResponse = await fetch(verifyUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+
+      const verifyResult = await googleResponse.json();
+
+      if (verifyResult.success) {
+        return res.json({
+          success: true,
+          challenge_ts: verifyResult.challenge_ts,
+          hostname: verifyResult.hostname,
+        });
+      } else {
+        console.warn("Google reCAPTCHA verification rejected:", verifyResult["error-codes"]);
+        return res.status(400).json({
+          success: false,
+          error: "Google reCAPTCHA verification failed. Please complete the security challenge again.",
+          errorCodes: verifyResult["error-codes"],
+        });
+      }
+    } catch (err: any) {
+      console.error("reCAPTCHA verification exception:", err?.message || err);
+      return res.status(500).json({
+        success: false,
+        error: "Internal server error verifying reCAPTCHA.",
+      });
     }
-
-    const parts = captchaToken.split(".");
-    if (parts.length !== 3) {
-      return res.status(400).json({ success: false, error: "Invalid CAPTCHA challenge format." });
-    }
-
-    const [challengeId, timestampStr, signature] = parts;
-    const timestamp = parseInt(timestampStr, 10);
-    const now = Date.now();
-
-    // Max 120 seconds validity window
-    if (isNaN(timestamp) || now - timestamp > 120000 || now < timestamp - 5000) {
-      return res.status(400).json({ success: false, error: "Security CAPTCHA expired. Please click refresh to get a new code." });
-    }
-
-    // Prevent replay
-    if (usedChallengeIds.has(challengeId)) {
-      return res.status(400).json({ success: false, error: "Security CAPTCHA already submitted. Please reload." });
-    }
-
-    // Recompute HMAC for user's candidate input
-    const normalizedInput = String(userInput).trim().toUpperCase();
-    const expectedSignature = crypto
-      .createHmac("sha256", CAPTCHA_SECRET)
-      .update(`${challengeId}:${normalizedInput}:${timestamp}`)
-      .digest("hex");
-
-    const sigBuf = Buffer.from(signature, "hex");
-    const expectedBuf = Buffer.from(expectedSignature, "hex");
-
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      return res.status(400).json({ success: false, error: "Incorrect CAPTCHA code. Please check and try again." });
-    }
-
-    // Mark as consumed
-    usedChallengeIds.add(challengeId);
-
-    // Issue verified proof token valid for 90 seconds
-    const verifyTimestamp = Date.now();
-    const proof = crypto
-      .createHmac("sha256", CAPTCHA_SECRET)
-      .update(`verified:${challengeId}:${verifyTimestamp}`)
-      .digest("hex");
-
-    return res.json({
-      success: true,
-      verificationToken: `${challengeId}.${verifyTimestamp}.${proof}`,
-    });
   });
 
   // Telemetry endpoint for Raspberry Pi Local Device Health Agent
   app.post("/api/device/health", (req, res) => {
-    const { deviceId, department, cpuTemp, cpuUsage, ramUsage, diskUsage, uptime, wifiSSID, ipAddress, appVersion } = req.body;
+    const {
+      deviceId,
+      department,
+      cpuTemp,
+      cpuUsage,
+      ramUsage,
+      diskUsage,
+      uptime,
+      wifiSSID,
+      ipAddress,
+      appVersion,
+    } = req.body;
+
     if (!deviceId) {
       return res.status(400).json({ error: "Missing deviceId in telemetry payload" });
     }
@@ -208,14 +197,14 @@ async function startServer() {
     return res.json(report);
   });
 
-  // Telegram Notice Bot Route
+  // Telegram Notice Bot Route (Kept Backend-Only, Never Exposes BOT_TOKEN)
   app.post("/telegram/send", async (req, res) => {
     try {
       const { chatId, title, description, department, priority } = req.body;
       const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 
       if (!botToken) {
-        console.warn("Telegram BOT_TOKEN is not configured in environment variables.");
+        console.warn("Telegram BOT_TOKEN is not configured in backend environment.");
         return res.json({
           success: false,
           warning: "BOT_TOKEN not configured in environment variables",
@@ -264,7 +253,7 @@ NBKRIST Automated Broadcast
   });
 
   // Vite middleware in dev, static files in prod
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -279,7 +268,7 @@ NBKRIST Automated Broadcast
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+    console.log(`🚀 NBKRIST Backend running on http://0.0.0.0:${PORT}`);
   });
 }
 

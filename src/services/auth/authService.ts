@@ -7,34 +7,20 @@ import {
 
 import { auth, isFirebaseConfigured } from "../../firebase/config";
 
-export const login = async (email?: string, password?: string) => {
-  const safeEmail = (email && email.trim()) || "23kb1a3334@nbkrist.org";
-  const safePassword = password || "admin123";
+export const login = async (email: string, password: string) => {
+  if (!email || !email.trim() || !password) {
+    throw new Error("Admin email and password are required.");
+  }
+
+  const cleanEmail = email.trim();
 
   if (!isFirebaseConfigured) {
-    // If Firebase Auth is not configured with cloud credentials, provide safe local authentication
-    console.info("Using local demo authentication session for NBKRIST admin.");
-    const mockUser: any = {
-      uid: "nbkr-" + Math.random().toString(36).substring(2, 9),
-      email: safeEmail,
-      displayName: safeEmail.split("@")[0] || "NBKRIST Admin",
-    };
-    return { user: mockUser };
+    throw new Error(
+      "Firebase configuration missing. Please provide VITE_FIREBASE_API_KEY and related configuration."
+    );
   }
 
-  try {
-    return await signInWithEmailAndPassword(auth, safeEmail, safePassword);
-  } catch (err: any) {
-    // If remote connection or credentials fail, allow graceful fallback for authorized campus admins
-    console.warn("Firebase sign-in failed, using campus admin session:", err?.message);
-    return {
-      user: {
-        uid: "nbkr-admin-local",
-        email: safeEmail,
-        displayName: "NBKRIST Admin",
-      } as any,
-    };
-  }
+  return await signInWithEmailAndPassword(auth, cleanEmail, password);
 };
 
 export const logout = async () => {

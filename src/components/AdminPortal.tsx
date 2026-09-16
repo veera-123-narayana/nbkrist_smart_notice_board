@@ -8,7 +8,7 @@ import { createAlert } from "../services/alerts/alertService";
 import { sendTelegramNotice } from "../services/telegram/telegramService";
 import useScreens from "../hooks/useScreens";
 import { login } from "../services/auth/authService";
-import CaptchaWidget, { verifyCaptchaChallenge } from "./CaptchaWidget";
+import CaptchaWidget, { verifyCaptchaWithBackend } from "./CaptchaWidget";
 
 import { 
   LayoutDashboard, 
@@ -54,37 +54,35 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
   const displayedScreens = liveScreens.length > 0 ? liveScreens : store.screens;
 
   // Admin Authentication State
-  const [authEmail, setAuthEmail] = useState('23kb1a3334@nbkrist.org');
-  const [authPassword, setAuthPassword] = useState('admin123');
-  const [authCaptchaInput, setAuthCaptchaInput] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
   const [authCaptchaToken, setAuthCaptchaToken] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
-
-  const handleQuickSuperAdminLogin = () => {
-    store.login('23kb1a3334@nbkrist.org', 'super-admin');
-    setCurrentUser({ email: '23kb1a3334@nbkrist.org', role: 'super-admin' });
-  };
 
   const handleAdminSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
 
-    // Safe fallbacks if values are left empty
-    const effectiveEmail = authEmail.trim() || '23kb1a3334@nbkrist.org';
-    const effectivePassword = authPassword.trim() || 'admin123';
+    const effectiveEmail = authEmail.trim();
+    const effectivePassword = authPassword;
 
-    if (!authCaptchaInput.trim()) {
-      setAuthError('Please enter the security CAPTCHA verification code.');
+    if (!effectiveEmail || !effectivePassword) {
+      setAuthError('Please enter your Admin Login ID and Password.');
+      return;
+    }
+
+    if (!authCaptchaToken) {
+      setAuthError('Please complete the Google reCAPTCHA verification checkbox.');
       return;
     }
 
     try {
       setAuthLoading(true);
-      // 1. Production-grade anti-bot verification
-      const captchaRes = await verifyCaptchaChallenge(authCaptchaToken, authCaptchaInput);
+      // 1. Google reCAPTCHA server verification via backend
+      const captchaRes = await verifyCaptchaWithBackend(authCaptchaToken);
       if (!captchaRes.success) {
-        setAuthError(captchaRes.error || 'Security verification failed. Please try again.');
+        setAuthError(captchaRes.error || 'reCAPTCHA verification failed. Please try again.');
         setAuthLoading(false);
         return;
       }
@@ -97,7 +95,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
       let role: UserSession['role'] = 'dept-admin';
       let dept: string | undefined = undefined;
 
-      if (lower.includes('super') || lower.includes('principal') || lower.includes('admin@nbkrist.org') || lower.includes('3334')) {
+      if (lower.includes('super') || lower.includes('principal') || lower.includes('admin@nbkrist.org')) {
         role = 'super-admin';
       } else {
         const foundDept = DEPARTMENTS.find(d => lower.includes(d.toLowerCase()));
@@ -106,7 +104,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
 
       store.login(effectiveEmail, role, dept);
       setCurrentUser({ email: effectiveEmail, role, department: dept });
-      setAuthCaptchaInput('');
+      setAuthCaptchaToken('');
     } catch (err: any) {
       console.error('Admin authentication failure:', err);
       setAuthError(err.message || 'Authentication failed. Please verify your credentials.');
@@ -473,47 +471,6 @@ if (noticeForm.type === "pdf") {
             Authorized administrator authentication required for publishing bulletins, urgent alerts, and managing department TV displays.
           </p>
 
-          {/* Default credentials information banner */}
-          <div className="mb-5 p-3.5 bg-indigo-950/40 border border-indigo-500/30 rounded-xl">
-            <div className="flex items-center justify-between gap-2 mb-1.5">
-              <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <span>🔑 Campus Default Credentials</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthEmail('23kb1a3334@nbkrist.org');
-                  setAuthPassword('admin123');
-                }}
-                className="text-[10px] bg-indigo-600/60 hover:bg-indigo-600 text-white px-2 py-0.5 rounded font-semibold transition"
-              >
-                Reset Auto-Fill
-              </button>
-            </div>
-            <p className="text-[11px] text-slate-300 leading-relaxed">
-              Default administrator access is pre-filled below:
-            </p>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-mono bg-slate-950/80 p-2 rounded border border-slate-800 text-slate-300">
-              <div><span className="text-slate-500">ID:</span> <span className="text-indigo-300 font-bold">23kb1a3334@nbkrist.org</span></div>
-              <div><span className="text-slate-500">Pass:</span> <span className="text-emerald-300 font-bold">admin123</span></div>
-            </div>
-          </div>
-
-          {/* 1-Click Instant Sign-In Option */}
-          <button
-            type="button"
-            onClick={handleQuickSuperAdminLogin}
-            className="w-full mb-4 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 p-2.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-          >
-            <span>⚡ Instant One-Click Sign-In as Super Admin</span>
-          </button>
-
-          <div className="relative flex py-2 items-center mb-3">
-            <div className="flex-grow border-t border-slate-800"></div>
-            <span className="flex-shrink mx-3 text-[10px] uppercase font-mono tracking-wider text-slate-500">Or Sign In with Form</span>
-            <div className="flex-grow border-t border-slate-800"></div>
-          </div>
-
           <form onSubmit={handleAdminSignIn} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1.5" htmlFor="portal-login-id">
@@ -521,8 +478,10 @@ if (noticeForm.type === "pdf") {
               </label>
               <input
                 id="portal-login-id"
-                type="text"
-                placeholder="23kb1a3334@nbkrist.org"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="admin@nbkrist.org"
                 className="w-full p-3 rounded-lg bg-slate-850 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm"
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
@@ -536,7 +495,9 @@ if (noticeForm.type === "pdf") {
               <input
                 id="portal-password"
                 type="password"
-                placeholder="admin123"
+                required
+                autoComplete="current-password"
+                placeholder="••••••••••••"
                 className="w-full p-3 rounded-lg bg-slate-850 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm"
                 value={authPassword}
                 onChange={(e) => setAuthPassword(e.target.value)}
@@ -546,9 +507,8 @@ if (noticeForm.type === "pdf") {
             {/* Anti-bot security verification */}
             <div className="pt-1">
               <CaptchaWidget
-                userInput={authCaptchaInput}
-                onUserInputChange={setAuthCaptchaInput}
-                onChallengeChange={(token) => setAuthCaptchaToken(token)}
+                onVerify={(token) => setAuthCaptchaToken(token)}
+                onExpire={() => setAuthCaptchaToken('')}
                 disabled={authLoading}
               />
             </div>
