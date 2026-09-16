@@ -4,23 +4,46 @@ import KioskDisplay from './components/KioskDisplay';
 import { Monitor, Shield, Sparkles, LayoutGrid, Calendar, HelpCircle } from 'lucide-react';
 
 export default function App() {
+  // Query param parsing for Raspberry Pi Smart Signage Appliance boot (?mode=kiosk)
+  const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const isKioskQuery = searchParams?.get('mode') === 'kiosk';
+  const urlDept = searchParams?.get('dept') || 'ALL';
+  const urlDeviceId = searchParams?.get('deviceId') || undefined;
+
   const [viewMode, setViewMode] = useState<'landing' | 'admin' | 'kiosk'>('landing');
-  const [selectedDept, setSelectedDept] = useState<string>('CSE');
+  const [selectedDept, setSelectedDept] = useState<string>(urlDept);
 
   const launchKiosk = (dept: string) => {
     setSelectedDept(dept);
     setViewMode('kiosk');
   };
 
+  // HARDENED APPLIANCE MODE: When ?mode=kiosk is active, directly render KioskDisplay
+  // Admin controls, landing page, and floating HUD are strictly disabled and cannot be accessed.
+  if (isKioskQuery) {
+    return (
+      <div className="w-screen h-screen overflow-hidden bg-slate-950 relative" id="kiosk-appliance-root">
+        <KioskDisplay 
+          initialDept={urlDept} 
+          deviceId={urlDeviceId}
+          isKioskAppliance={true}
+        />
+      </div>
+    );
+  }
+
+  // Preview / Simulation Kiosk Mode for testing in desktop browser
   if (viewMode === 'kiosk') {
     return (
       <div className="w-screen h-screen overflow-hidden bg-slate-950 relative">
         <KioskDisplay 
           initialDept={selectedDept} 
+          deviceId={urlDeviceId}
+          isKioskAppliance={false}
           onExit={() => setViewMode('admin')} 
         />
         
-        {/* Sleek Minimalist floating HUD toolbar to jump back easily */}
+        {/* Sleek Minimalist floating HUD toolbar for desktop previewers only */}
         <div className="fixed bottom-4 left-4 z-50 flex items-center gap-1.5 opacity-30 hover:opacity-100 transition-opacity duration-300 bg-slate-900/80 backdrop-blur-md p-1.5 px-3 rounded-full border border-white/10 shadow-lg text-[9px] font-mono text-white select-none">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           <span className="font-semibold text-slate-350">TV PREVIEW SHIFT:</span>

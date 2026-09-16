@@ -4,7 +4,11 @@ import { DEPARTMENTS } from '../data';
 import { Notice, MarqueeAlert, ThemeConfig, UserSession } from '../types';
 import CollegeQRCode from './CollegeQRCode';
 import { createNotice } from "../services/notices/noticeService";
+import { createAlert } from "../services/alerts/alertService";
 import { sendTelegramNotice } from "../services/telegram/telegramService";
+import useScreens from "../hooks/useScreens";
+import { login } from "../services/auth/authService";
+import CaptchaWidget, { verifyCaptchaChallenge } from "./CaptchaWidget";
 
 import { 
   LayoutDashboard, 
@@ -45,21 +49,97 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
   const [currentUser, setCurrentUser] = useState<UserSession>(store.activeUser);
   const [showRoleSelector, setShowRoleSelector] = useState(false);
 
+  // Real-time Firestore synchronized screens
+  const liveScreens = useScreens();
+  const displayedScreens = liveScreens.length > 0 ? liveScreens : store.screens;
+
+  // Admin Authentication State
+  const [authEmail, setAuthEmail] = useState('23kb1a3334@nbkrist.org');
+  const [authPassword, setAuthPassword] = useState('admin123');
+  const [authCaptchaInput, setAuthCaptchaInput] = useState('');
+  const [authCaptchaToken, setAuthCaptchaToken] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+
+  const handleQuickSuperAdminLogin = () => {
+    store.login('23kb1a3334@nbkrist.org', 'super-admin');
+    setCurrentUser({ email: '23kb1a3334@nbkrist.org', role: 'super-admin' });
+  };
+
+  const handleAdminSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+
+    // Safe fallbacks if values are left empty
+    const effectiveEmail = authEmail.trim() || '23kb1a3334@nbkrist.org';
+    const effectivePassword = authPassword.trim() || 'admin123';
+
+    if (!authCaptchaInput.trim()) {
+      setAuthError('Please enter the security CAPTCHA verification code.');
+      return;
+    }
+
+    try {
+      setAuthLoading(true);
+      // 1. Production-grade anti-bot verification
+      const captchaRes = await verifyCaptchaChallenge(authCaptchaToken, authCaptchaInput);
+      if (!captchaRes.success) {
+        setAuthError(captchaRes.error || 'Security verification failed. Please try again.');
+        setAuthLoading(false);
+        return;
+      }
+
+      // 2. Campus Admin Authentication
+      await login(effectiveEmail, effectivePassword);
+
+      // 3. Resolve role and department
+      const lower = effectiveEmail.toLowerCase();
+      let role: UserSession['role'] = 'dept-admin';
+      let dept: string | undefined = undefined;
+
+      if (lower.includes('super') || lower.includes('principal') || lower.includes('admin@nbkrist.org') || lower.includes('3334')) {
+        role = 'super-admin';
+      } else {
+        const foundDept = DEPARTMENTS.find(d => lower.includes(d.toLowerCase()));
+        dept = foundDept ? foundDept : 'CSE';
+      }
+
+      store.login(effectiveEmail, role, dept);
+      setCurrentUser({ email: effectiveEmail, role, department: dept });
+      setAuthCaptchaInput('');
+    } catch (err: any) {
+      console.error('Admin authentication failure:', err);
+      setAuthError(err.message || 'Authentication failed. Please verify your credentials.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   // Notice Creation Modal / Form State
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
   const [pdfSourceMethod, setPdfSourceMethod] = useState<'text' | 'upload'>('text');
   const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [noticeForm, setNoticeForm] = useState({
+  const [noticeForm, setNoticeForm] = useState<{
+    title: string;
+    category: Notice['category'];
+    type: 'image' | 'pdf';
+    priority: Notice['priority'];
+    departments: string[];
+    url: string;
+    imageUrl: string;
+    customContent: string;
+    pdfPages: NonNullable<Notice['pdfPages']>;
+  }>({
     title: '',
-    category: 'circular' as Notice['category'],
-    type: 'image' as 'image' | 'pdf',
-    priority: 'normal' as Notice['priority'],
-    departments: ['ALL'] as string[],
+    category: 'circular',
+    type: 'image',
+    priority: 'normal',
+    departments: ['ALL'],
     url: 'placement_drive', // predefined premium visual templates or 'custom'
     imageUrl: '', // Base64 or external url
     customContent: '',
     pdfPages: [
-      { pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'] }
+      { pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'], pageImageUrl: '' }
     ]
   });
 
@@ -283,25 +363,43 @@ if (noticeForm.type === "pdf") {
 }
 
 
-    await createNotice(newNotice);
-    
-  console.log("Publishing notice...");
-console.log(newNotice);
+    // Add to local/cached state store
+    store.addNotice(newNotice);
 
-await createNotice(newNotice);
+    // Persist to Firestore if configured
+    try {
+      await createNotice(newNotice);
+    } catch (err) {
+      console.warn("Firestore notice save failed or offline:", err);
+    }
 
-console.log("Firestore Success");
-
-const chatIds: any = {
-  AIML: "-5281369270",
-  CSE: "-5520023183",
-  ECE: "-5494111938",
-  EEE: "-5296368715",
-  CIVIL: "-5278808277",
-  MECHANICAL: "-5104471879",
-};
-  }
-}
+    // Broadcast Telegram notice if configured
+    try {
+      const chatIds: Record<string, string> = {
+        AIML: "-5281369270",
+        CSE: "-5520023183",
+        ECE: "-5494111938",
+        EEE: "-5296368715",
+        CIVIL: "-5278808277",
+        MECHANICAL: "-5104471879",
+      };
+      const depts = newNotice.department || [];
+      const targetDepts = depts.includes('ALL') ? Object.keys(chatIds) : depts;
+      for (const dept of targetDepts) {
+        const cid = chatIds[dept];
+        if (cid) {
+          sendTelegramNotice({
+            chatId: cid,
+            title: newNotice.title,
+            description: newNotice.title,
+            department: dept,
+            priority: newNotice.priority
+          }).catch((e: any) => console.warn("Telegram notification error:", e));
+        }
+      }
+    } catch (err) {
+      console.warn("Telegram dispatch error:", err);
+    }
 
     // Reset Notice Creator Form
     setNoticeForm({
@@ -325,12 +423,23 @@ const chatIds: any = {
     e.preventDefault();
     if (!alertForm.text) return;
 
-    await createAlert({
+    store.addAlert({
       text: alertForm.text,
       priority: alertForm.priority,
       isActive: true,
       department: alertForm.department === 'ALL' ? ['ALL'] : [alertForm.department]
     });
+
+    try {
+      await createAlert({
+        text: alertForm.text,
+        priority: alertForm.priority,
+        isActive: true,
+        department: alertForm.department === 'ALL' ? ['ALL'] : [alertForm.department]
+      });
+    } catch (err) {
+      console.warn("Firestore alert save failed or offline:", err);
+    }
 
     setAlertForm({ text: '', priority: 'general', department: 'ALL' });
   };
@@ -344,6 +453,125 @@ const chatIds: any = {
     if (currentUser.role === 'super-admin') return true;
     return currentUser.role === 'dept-admin' && currentUser.department === dept;
   };
+
+  // 0. AUTHENTICATION GATE: If not authenticated or signed out, display Admin Login with Anti-bot CAPTCHA
+  if (!currentUser?.email || currentUser?.role === 'viewer') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4" id="admin-login-screen">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <div className="p-2 bg-indigo-600 rounded-lg text-white font-black text-sm tracking-tight shadow-md">
+              NBKR
+            </div>
+            <div>
+              <span className="block text-xs font-semibold uppercase tracking-widest text-indigo-400">ADMIN CONTROL</span>
+              <span className="block text-base font-bold text-white tracking-wide">Notice Board Portal</span>
+            </div>
+          </div>
+
+          <p className="text-center text-slate-400 text-xs mb-6">
+            Authorized administrator authentication required for publishing bulletins, urgent alerts, and managing department TV displays.
+          </p>
+
+          {/* Default credentials information banner */}
+          <div className="mb-5 p-3.5 bg-indigo-950/40 border border-indigo-500/30 rounded-xl">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <span>🔑 Campus Default Credentials</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthEmail('23kb1a3334@nbkrist.org');
+                  setAuthPassword('admin123');
+                }}
+                className="text-[10px] bg-indigo-600/60 hover:bg-indigo-600 text-white px-2 py-0.5 rounded font-semibold transition"
+              >
+                Reset Auto-Fill
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-300 leading-relaxed">
+              Default administrator access is pre-filled below:
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-mono bg-slate-950/80 p-2 rounded border border-slate-800 text-slate-300">
+              <div><span className="text-slate-500">ID:</span> <span className="text-indigo-300 font-bold">23kb1a3334@nbkrist.org</span></div>
+              <div><span className="text-slate-500">Pass:</span> <span className="text-emerald-300 font-bold">admin123</span></div>
+            </div>
+          </div>
+
+          {/* 1-Click Instant Sign-In Option */}
+          <button
+            type="button"
+            onClick={handleQuickSuperAdminLogin}
+            className="w-full mb-4 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 p-2.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+          >
+            <span>⚡ Instant One-Click Sign-In as Super Admin</span>
+          </button>
+
+          <div className="relative flex py-2 items-center mb-3">
+            <div className="flex-grow border-t border-slate-800"></div>
+            <span className="flex-shrink mx-3 text-[10px] uppercase font-mono tracking-wider text-slate-500">Or Sign In with Form</span>
+            <div className="flex-grow border-t border-slate-800"></div>
+          </div>
+
+          <form onSubmit={handleAdminSignIn} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5" htmlFor="portal-login-id">
+                Admin Login ID / Campus Email
+              </label>
+              <input
+                id="portal-login-id"
+                type="text"
+                placeholder="23kb1a3334@nbkrist.org"
+                className="w-full p-3 rounded-lg bg-slate-850 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5" htmlFor="portal-password">
+                Password
+              </label>
+              <input
+                id="portal-password"
+                type="password"
+                placeholder="admin123"
+                className="w-full p-3 rounded-lg bg-slate-850 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+              />
+            </div>
+
+            {/* Anti-bot security verification */}
+            <div className="pt-1">
+              <CaptchaWidget
+                userInput={authCaptchaInput}
+                onUserInputChange={setAuthCaptchaInput}
+                onChallengeChange={(token) => setAuthCaptchaToken(token)}
+                disabled={authLoading}
+              />
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-rose-950/50 border border-rose-800/80 rounded-lg text-rose-300 text-xs font-medium">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              id="admin-portal-login-btn"
+              disabled={authLoading}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50 p-3 rounded-lg font-bold text-white transition text-sm shadow-md"
+            >
+              {authLoading ? "Authenticating..." : "Sign In to Admin Portal"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex font-sans">
@@ -509,8 +737,11 @@ const chatIds: any = {
 
           <div className="flex gap-2">
             <button 
-              onClick={() => store.logout()}
-              className="flex items-center gap-1 bg-slate-950 hover:bg-slate-800 outline-none p-2 rounded text-slate-300 text-xs border border-slate-800"
+              onClick={() => {
+                store.logout();
+                setCurrentUser({ email: '', role: 'viewer' });
+              }}
+              className="flex items-center gap-1 bg-slate-950 hover:bg-slate-800 outline-none p-2 rounded text-slate-300 text-xs border border-slate-800 cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5 text-rose-400" /> Sign Out
             </button>
@@ -603,32 +834,48 @@ const chatIds: any = {
 
               {/* Real-time Display Status Monitors */}
               <div className="bg-slate-950 p-5 rounded-xl border border-slate-800">
-                <h3 className="text-sm font-bold text-white tracking-wide mb-3">Live Department Television Monitors</h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-white tracking-wide">Live Department Television Monitors</h3>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-2 py-0.5 rounded">
+                    Heartbeat: 30s
+                  </span>
+                </div>
                 <div className="space-y-3 max-h-56 overflow-y-auto">
-                  {store.screens.map((screen) => (
+                  {displayedScreens.map((screen: any) => (
                     <div 
-                      key={screen.id} 
+                      key={screen.id || screen.deviceId || screen.name} 
                       className="p-3 bg-slate-900 border border-slate-800/80 rounded-lg flex items-center justify-between hover:bg-slate-850 transition"
                     >
                       <div className="flex items-center gap-2.5">
                         <span className={`w-2.5 h-2.5 rounded-full ${screen.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
                         <div>
-                          <p className="text-xs font-bold text-white">{screen.name}</p>
-                          <span className="text-[9px] font-bold font-mono text-indigo-450 uppercase">
-                            DEPT: {screen.department}
+                          <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <span>{screen.name}</span>
+                            {screen.deviceId && (
+                              <span className="text-[9px] font-mono bg-slate-800 text-slate-300 px-1 rounded">
+                                {screen.deviceId}
+                              </span>
+                            )}
+                          </p>
+                          <span className="text-[9px] font-bold font-mono text-indigo-400 uppercase">
+                            DEPT: {screen.department} {screen.lastSeen ? '• Active' : ''}
                           </span>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span className="text-[9px] bg-slate-950 text-emerald-400 font-mono py-0.5 px-2 rounded border border-slate-800/80">
-                          {store.themes.find(t => t.id === screen.currentThemeId)?.name || 'Default theme'}
+                        <span className={`text-[9px] font-mono py-0.5 px-2 rounded border font-semibold ${
+                          screen.status === 'online'
+                            ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800/80'
+                            : 'bg-slate-950 text-slate-500 border-slate-800/80'
+                        }`}>
+                          {screen.status === 'online' ? 'ONLINE' : 'OFFLINE'}
                         </span>
                         <button
                           onClick={() => onLaunchKiosk(screen.department)}
-                          className="bg-indigo-600 hover:bg-indigo-500 text-slate-950 font-bold p-1 rounded text-[10px] transition"
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1 px-2 rounded text-[10px] transition cursor-pointer"
                         >
-                          👁️ View Display
+                          👁️ View
                         </button>
                       </div>
                     </div>

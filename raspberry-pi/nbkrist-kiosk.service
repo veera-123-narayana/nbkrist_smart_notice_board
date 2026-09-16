@@ -1,0 +1,19 @@
+[Unit]
+Description=NBKRIST Smart Digital Signage Kiosk Appliance
+After=network-online.target graphical.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=APP_URL=https://YOUR_DEPLOYED_APP_URL
+Environment=DEPARTMENT=ECE
+Environment=DEVICE_ID=NBKR-ECE-01
+ExecStart=/bin/bash /home/pi/nbkrist-signage/start-kiosk.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

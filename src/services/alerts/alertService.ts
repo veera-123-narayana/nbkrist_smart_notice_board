@@ -10,34 +10,72 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
-import { db } from "../../firebase/config";
+import { db, isFirebaseConfigured } from "../../firebase/config";
+import { saveCachedAlerts } from "../cache/offlineCache";
 
 const alertCollection = collection(db, "alerts");
 
 export async function createAlert(alert: any) {
-  return await addDoc(alertCollection, {
-    ...alert,
-    createdAt: serverTimestamp(),
-  });
+  if (!isFirebaseConfigured) return null;
+  try {
+    return await addDoc(alertCollection, {
+      ...alert,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn("Firestore createAlert notice (local store mode):", err);
+    return null;
+  }
 }
 
 export async function updateAlert(id: string, data: any) {
-  return await updateDoc(doc(db, "alerts", id), data);
+  if (!isFirebaseConfigured) return null;
+  try {
+    return await updateDoc(doc(db, "alerts", id), data);
+  } catch (err) {
+    console.warn("Firestore updateAlert notice (local store mode):", err);
+    return null;
+  }
 }
 
 export async function deleteAlert(id: string) {
-  return await deleteDoc(doc(db, "alerts", id));
+  if (!isFirebaseConfigured) return null;
+  try {
+    return await deleteDoc(doc(db, "alerts", id));
+  } catch (err) {
+    console.warn("Firestore deleteAlert notice (local store mode):", err);
+    return null;
+  }
 }
 
 export function subscribeAlerts(callback: (alerts: any[]) => void) {
-  const q = query(alertCollection, orderBy("createdAt", "desc"));
+  if (!isFirebaseConfigured) {
+    return () => {};
+  }
 
-  return onSnapshot(q, (snapshot) => {
-    callback(
-      snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
+  try {
+    const q = query(alertCollection, orderBy("createdAt", "desc"));
+
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const alerts = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        saveCachedAlerts(alerts as any).catch((e) =>
+          console.warn("Failed to cache alerts to IndexedDB:", e)
+        );
+
+        callback(alerts);
+      },
+      (error) => {
+        console.warn("Firestore alerts subscription error / offline fallback:", error);
+      }
     );
-  });
+  } catch (err) {
+    console.warn("subscribeAlerts setup notice:", err);
+    return () => {};
+  }
 }

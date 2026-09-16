@@ -1,6 +1,20 @@
 import { useState, useEffect } from 'react';
 import { Notice, MarqueeAlert, ThemeConfig, DisplayScreen, CollegeStats, AuditLog, ThemeSchedule, UserSession } from './types';
 import { INITIAL_NOTICES, INITIAL_ALERTS, DEFAULT_THEMES, INITIAL_SCREENS, INITIAL_AUDIT_LOGS } from './data';
+import { subscribeNotices } from './services/notices/noticeService';
+import { subscribeAlerts } from './services/alerts/alertService';
+import { subscribeThemes } from './services/themes/themeService';
+import { subscribeScreens } from './services/devices/deviceService';
+import {
+  getCachedNotices,
+  getCachedAlerts,
+  getCachedThemes,
+  getCachedScreens,
+  saveCachedNotices,
+  saveCachedAlerts,
+  saveCachedThemes,
+  saveCachedScreens,
+} from './services/cache/offlineCache';
 
 // Channel for multi-tab real-time sync in the browser
 const SYNC_CHANNEL_NAME = 'nbkrist_noticeboard_live_sync';
@@ -57,6 +71,7 @@ class GlobalStateEngine {
   private schedules: ThemeSchedule[] = [];
   private activeUser: UserSession = { email: '23kb1a3334@nbkrist.org', role: 'super-admin' };
   private listeners: Set<() => void> = new Set();
+  private isInitializedFromCache = false;
 
   constructor() {
     this.notices = loadFromStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES);
@@ -78,6 +93,146 @@ class GlobalStateEngine {
         }
       };
     }
+
+    // Load from durable IndexedDB offline cache
+    this.loadOfflineCacheAsync();
+
+    // Start background Firestore real-time synchronization
+    this.initFirestoreSync();
+
+    // Start 15-second heartbeat monitor to evaluate 90s device online/offline threshold
+    this.initHeartbeatMonitor();
+  }
+
+  private async loadOfflineCacheAsync() {
+    if (this.isInitializedFromCache || typeof window === 'undefined') return;
+    this.isInitializedFromCache = true;
+    try {
+      const [cachedNotices, cachedAlerts, cachedThemes, cachedScreens] = await Promise.all([
+        getCachedNotices(),
+        getCachedAlerts(),
+        getCachedThemes(),
+        getCachedScreens(),
+      ]);
+
+      let hasUpdates = false;
+      if (cachedNotices && cachedNotices.length > 0) {
+        this.notices = cachedNotices;
+        hasUpdates = true;
+      }
+      if (cachedAlerts && cachedAlerts.length > 0) {
+        this.alerts = cachedAlerts;
+        hasUpdates = true;
+      }
+      if (cachedThemes && cachedThemes.length > 0) {
+        this.themes = cachedThemes;
+        hasUpdates = true;
+      }
+      if (cachedScreens && cachedScreens.length > 0) {
+        this.screens = cachedScreens;
+        hasUpdates = true;
+      }
+
+      if (hasUpdates) {
+        this.notify();
+      }
+    } catch (e) {
+      console.warn('Offline cache initial read notice:', e);
+    }
+  }
+
+  private initFirestoreSync() {
+    if (typeof window === 'undefined') return;
+    try {
+      subscribeNotices((data) => {
+        if (data && data.length > 0) {
+          this.notices = data as Notice[];
+          saveCachedNotices(this.notices).catch(() => {});
+          saveToStorage(STORAGE_KEYS.NOTICES, this.notices);
+          this.notify();
+        }
+      });
+    } catch (e) {
+      console.warn('subscribeNotices error in store:', e);
+    }
+
+    try {
+      subscribeAlerts((data) => {
+        if (data && data.length > 0) {
+          this.alerts = data as MarqueeAlert[];
+          saveCachedAlerts(this.alerts).catch(() => {});
+          saveToStorage(STORAGE_KEYS.ALERTS, this.alerts);
+          this.notify();
+        }
+      });
+    } catch (e) {
+      console.warn('subscribeAlerts error in store:', e);
+    }
+
+    try {
+      subscribeThemes((data) => {
+        if (data && data.length > 0) {
+          this.themes = data as ThemeConfig[];
+          saveCachedThemes(this.themes).catch(() => {});
+          saveToStorage(STORAGE_KEYS.THEMES, this.themes);
+          this.notify();
+        }
+      });
+    } catch (e) {
+      console.warn('subscribeThemes error in store:', e);
+    }
+
+    try {
+      subscribeScreens((data) => {
+        if (data && data.length > 0) {
+          const existing = [...this.screens];
+          const merged = existing.map((base) => {
+            const match = data.find((d: any) => d.department === base.department || d.id === base.id || d.deviceId === base.id);
+            return match ? { ...base, ...match } : base;
+          });
+
+          // Add any new Raspberry Pi devices
+          data.forEach((d: any) => {
+            if (!merged.find((m) => m.id === d.id || m.id === d.deviceId)) {
+              merged.push(d as DisplayScreen);
+            }
+          });
+
+          this.screens = merged;
+          saveCachedScreens(this.screens).catch(() => {});
+          saveToStorage(STORAGE_KEYS.SCREENS, this.screens);
+          this.notify();
+        }
+      });
+    } catch (e) {
+      console.warn('subscribeScreens error in store:', e);
+    }
+  }
+
+  private initHeartbeatMonitor() {
+    if (typeof window === 'undefined') return;
+    setInterval(() => {
+      const now = Date.now();
+      let hasChanged = false;
+      this.screens = this.screens.map((screen) => {
+        const hbStr = (screen as any).lastHeartbeat || screen.lastSeen;
+        if (hbStr) {
+          const hbTime = new Date(hbStr).getTime();
+          // Device is online if heartbeat is within 90 seconds
+          const isOnline = now - hbTime <= 90000;
+          const status = isOnline ? 'online' : 'offline';
+          if (screen.status !== status) {
+            hasChanged = true;
+            return { ...screen, status };
+          }
+        }
+        return screen;
+      });
+
+      if (hasChanged) {
+        this.notify();
+      }
+    }, 15000);
   }
 
   private syncFromLocalStorage() {

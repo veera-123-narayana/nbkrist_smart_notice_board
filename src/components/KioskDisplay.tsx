@@ -10,6 +10,7 @@ import useScreens from "../hooks/useScreens";
 import { Notice, ThemeConfig } from "../types";
 import CollegeQRCode from "./CollegeQRCode";
 import AnimatedBackground from "./AnimatedBackground";
+import { registerOrUpdateDevice, sendDeviceHeartbeat } from "../services/devices/deviceService";
 
 import {
   Volume2,
@@ -18,9 +19,18 @@ import {
   RefreshCw,
 } from "lucide-react";
 
+interface KioskDisplayProps {
+  initialDept?: string;
+  deviceId?: string;
+  onExit?: () => void;
+  isKioskAppliance?: boolean;
+}
+
 export default function KioskDisplay({
   initialDept = "ALL",
+  deviceId: propDeviceId,
   onExit,
+  isKioskAppliance,
 }: KioskDisplayProps) {
 
   // Temporary Local Store
@@ -37,6 +47,34 @@ export default function KioskDisplay({
   const screens = useScreens();
 
   const [currentDept, setCurrentDept] = useState(initialDept);
+
+  // Derive unique device identifier for Raspberry Pi
+  const resolvedDeviceId = propDeviceId || 
+    (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('deviceId') : null) || 
+    `NBKR-${currentDept}-01`;
+
+  // FEATURE 2: Register device identity in Firebase
+  useEffect(() => {
+    registerOrUpdateDevice({
+      deviceId: resolvedDeviceId,
+      department: currentDept,
+      deviceName: `NBKRIST ${currentDept} Smart TV Display (${resolvedDeviceId})`,
+      appVersion: "1.0.0",
+      screenResolution: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : '1920x1080',
+    });
+  }, [resolvedDeviceId, currentDept]);
+
+  // FEATURE 3: 30-second interval Device Heartbeat update in Firebase
+  useEffect(() => {
+    const hbInterval = setInterval(() => {
+      sendDeviceHeartbeat(resolvedDeviceId, {
+        department: currentDept,
+        screenResolution: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : '1920x1080',
+      });
+    }, 30000); // 30s interval
+
+    return () => clearInterval(hbInterval);
+  }, [resolvedDeviceId, currentDept]);
 
   // Sync with outer HUD / selected display screen shifts
   useEffect(() => {
@@ -114,11 +152,22 @@ export default function KioskDisplay({
     };
   }, []);
 
-  // Filter content matching current department or ALL
-  const departmentNotices = store.notices.filter(notice => 
-    !notice.isArchived && 
-    (notice.department.includes('ALL') || notice.department.includes(currentDept))
-  );
+  // FEATURE 8: Emergency & Priority hierarchy handling
+  // Priority ordering: urgent notices rotate first, then high, medium, normal
+  const priorityRank: Record<string, number> = {
+    urgent: 1,
+    high: 2,
+    medium: 3,
+    normal: 4,
+  };
+
+  // Filter content matching current department or ALL, sorted by priority rank
+  const departmentNotices = store.notices
+    .filter(notice => 
+      !notice.isArchived && 
+      (notice.department.includes('ALL') || notice.department.includes(currentDept))
+    )
+    .sort((a, b) => (priorityRank[a.priority] || 4) - (priorityRank[b.priority] || 4));
 
   const imageNotices = departmentNotices.filter(n => n.type === 'image');
   const pdfNotices = departmentNotices.filter(n => n.type === 'pdf');
@@ -164,7 +213,8 @@ export default function KioskDisplay({
 
     // Get display timing based on Poster Priority levels
     let duration = 10000; // default 10s
-    if (notice.priority === 'high') duration = 30000;
+    if (notice.priority === 'urgent') duration = 35000; // 35s for urgent
+    else if (notice.priority === 'high') duration = 30000; // 30s for high / important
     else if (notice.priority === 'medium') duration = 15000;
     else if (notice.priority === 'normal') duration = 10000;
 
@@ -832,7 +882,7 @@ export default function KioskDisplay({
                               
                               <div className="space-y-2 text-[9px] text-slate-700 leading-relaxed text-justify px-1 antialiased font-sans font-medium whitespace-pre-wrap">
                                 <p className="indent-4 leading-normal">
-                                  {activePdfNotice.description || "Official electronic circular attachment."}
+                                  {(activePdfNotice as any).description || activePdfNotice.title || "Official electronic circular attachment."}
                                 </p>
                               </div>
                             </div>

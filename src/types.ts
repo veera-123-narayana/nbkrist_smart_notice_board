@@ -6,7 +6,7 @@ export interface Notice {
   url: string; // Image URL or visual asset description
   imageUrl?: string; // Opt-in base64 uploaded or pasted external image URL to display
   category: 'circular' | 'placement' | 'event' | 'timetable' | 'exam' | 'general';
-  priority: 'emergency' | 'high' | 'medium' | 'normal';
+  priority: 'emergency' | 'urgent' | 'important' | 'high' | 'medium' | 'normal';
   uploadedBy: string;
   createdAt: string;
   startDateTime: string;

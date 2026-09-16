@@ -1,5 +1,7 @@
+// Telegram group configurations for department broadcasts
+// Note: Bot secret token is stored exclusively backend-side in BOT_TOKEN environment variable.
 export const TELEGRAM_CONFIG = {
-  BOT_TOKEN: import.meta.env.VITE_TELEGRAM_BOT_TOKEN,
+  backendEndpoint: (import.meta.env.VITE_BACKEND_URL || "").replace(/\/+$/, "") + "/telegram/send",
 };
 
 export const TELEGRAM_GROUPS = {

@@ -1,0 +1,17 @@
+[Unit]
+Description=NBKRIST Signage Device Health Telemetry Agent
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Environment=APP_URL=https://YOUR_DEPLOYED_APP_URL
+Environment=DEPARTMENT=ECE
+Environment=DEVICE_ID=NBKR-ECE-01
+Environment=REPORT_INTERVAL=60
+ExecStart=/usr/bin/python3 /home/pi/nbkrist-signage/device-agent.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
