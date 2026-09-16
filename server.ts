@@ -18,7 +18,7 @@ const DEV_TEST_CAPTCHA_SECRET = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 10000;
   const isProduction = process.env.NODE_ENV === "production";
 
   // Parse allowed origins from FRONTEND_URL environment variable
