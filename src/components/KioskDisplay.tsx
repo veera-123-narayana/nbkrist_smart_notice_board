@@ -11,6 +11,7 @@ import { Notice, ThemeConfig } from "../types";
 import CollegeQRCode from "./CollegeQRCode";
 import AnimatedBackground from "./AnimatedBackground";
 import { registerOrUpdateDevice, sendDeviceHeartbeat } from "../services/devices/deviceService";
+import { resolveNoticeDocumentUrl } from "../utils/documentUrl";
 
 import {
   Volume2,
@@ -507,9 +508,11 @@ export default function KioskDisplay({
                 <div className="flex items-center gap-3">
                   <div className="text-right text-xs">
                     <p className="font-semibold text-rose-500">MOBILE SCAN ACCESS</p>
-                    <p className="text-[9px] opacity-70">Scan to fetch files off-grid</p>
+                    <p className="text-[9px] opacity-70">
+                      {resolveNoticeDocumentUrl(emergencyNotice) ? 'Scan to fetch files off-grid' : 'Emergency advisory'}
+                    </p>
                   </div>
-                  <CollegeQRCode value={emergencyNotice.qrCodeData} size={110} />
+                  <CollegeQRCode value={resolveNoticeDocumentUrl(emergencyNotice) || ''} size={110} />
                 </div>
               </div>
             </div>
@@ -904,23 +907,32 @@ export default function KioskDisplay({
                     </div>
 
                     {/* Integrated QR Scan-Drawer Footer */}
-                    <div className="p-4 bg-slate-950/65 border-t border-white/5 flex items-center justify-between z-10">
-                      <div className="flex-1 pr-3">
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded px-2.5 py-1 inline-flex items-center gap-1 shrink-0">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
-                          <span className="text-[9px] font-bold font-mono text-emerald-400">QR SYNCHRONIZED</span>
-                        </div>
-                        <p className="text-xs font-bold text-slate-200 mt-1.5 truncate max-w-[200px]">
-                          {activePdfNotice.title}
-                        </p>
-                        <p className="text-[8px] font-mono text-slate-400 leading-tight">
-                          Aim smartphone lens at the panel code to instantly load full PDF schedules on-the-go.
-                        </p>
-                      </div>
+                    {(() => {
+                      const activeDocUrl = resolveNoticeDocumentUrl(activePdfNotice);
+                      return (
+                        <div className="p-4 bg-slate-950/65 border-t border-white/5 flex items-center justify-between z-10">
+                          <div className="flex-1 pr-3">
+                            <div className={`${activeDocUrl ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-slate-800/50 border-slate-700/50 text-slate-400'} border rounded px-2.5 py-1 inline-flex items-center gap-1 shrink-0`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${activeDocUrl ? 'bg-emerald-400 animate-ping' : 'bg-slate-500'} inline-block`} />
+                              <span className="text-[9px] font-bold font-mono">
+                                {activeDocUrl ? 'QR SYNCHRONIZED' : 'QR NOT LINKED'}
+                              </span>
+                            </div>
+                            <p className="text-xs font-bold text-slate-200 mt-1.5 truncate max-w-[200px]">
+                              {activePdfNotice.title}
+                            </p>
+                            <p className="text-[8px] font-mono text-slate-400 leading-tight">
+                              {activeDocUrl
+                                ? 'Aim smartphone lens at the panel code to instantly load full PDF schedules on-the-go.'
+                                : 'Notice displayed on screen. Awaiting downloadable document attachment.'}
+                            </p>
+                          </div>
 
-                      {/* Display QR code */}
-                      <CollegeQRCode value={activePdfNotice.qrCodeData} size={90} />
-                    </div>
+                          {/* Display QR code */}
+                          <CollegeQRCode value={activeDocUrl || ''} size={90} />
+                        </div>
+                      );
+                    })()}
 
                   </div>
                 ) : (

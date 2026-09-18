@@ -8,7 +8,9 @@ import { createAlert } from "../services/alerts/alertService";
 import { sendTelegramNotice } from "../services/telegram/telegramService";
 import useScreens from "../hooks/useScreens";
 import { login } from "../services/auth/authService";
-import CaptchaWidget, { verifyCaptchaWithBackend } from "./CaptchaWidget";
+import CaptchaWidget, { verifyCaptchaWithBackend, resetRecaptcha } from "./CaptchaWidget";
+import { uploadPdfToStorage } from '../firebase/storage';
+import { isValidPublicDocumentUrl } from '../utils/documentUrl';
 
 import { 
   LayoutDashboard, 
@@ -83,6 +85,8 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
       const captchaRes = await verifyCaptchaWithBackend(authCaptchaToken);
       if (!captchaRes.success) {
         setAuthError(captchaRes.error || 'reCAPTCHA verification failed. Please try again.');
+        setAuthCaptchaToken('');
+        resetRecaptcha();
         setAuthLoading(false);
         return;
       }
@@ -108,6 +112,8 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     } catch (err: any) {
       console.error('Admin authentication failure:', err);
       setAuthError(err.message || 'Authentication failed. Please verify your credentials.');
+      setAuthCaptchaToken('');
+      resetRecaptcha();
     } finally {
       setAuthLoading(false);
     }
@@ -117,6 +123,10 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
   const [pdfSourceMethod, setPdfSourceMethod] = useState<'text' | 'upload'>('text');
   const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [pdfUploadStatus, setPdfUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
+  const [pdfUploadError, setPdfUploadError] = useState<string | null>(null);
+  const [uploadedPdfUrl, setUploadedPdfUrl] = useState<string>('');
+  const [uploadedPdfFileName, setUploadedPdfFileName] = useState<string>('');
   const [noticeForm, setNoticeForm] = useState<{
     title: string;
     category: Notice['category'];
@@ -125,6 +135,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     departments: string[];
     url: string;
     imageUrl: string;
+    pdfUrl: string;
     customContent: string;
     pdfPages: NonNullable<Notice['pdfPages']>;
   }>({
@@ -135,6 +146,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     departments: ['ALL'],
     url: 'placement_drive', // predefined premium visual templates or 'custom'
     imageUrl: '', // Base64 or external url
+    pdfUrl: '',
     customContent: '',
     pdfPages: [
       { pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'], pageImageUrl: '' }
@@ -241,7 +253,36 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Please upload a valid PDF document file (.pdf).');
+      return;
+    }
+
     setIsPdfLoading(true);
+    setPdfUploadStatus('uploading');
+    setPdfUploadError(null);
+    setUploadedPdfFileName(file.name);
+
+    // 1. Store the PDF in Firebase Storage and obtain the download URL
+    let storageDownloadUrl = '';
+    try {
+      storageDownloadUrl = await uploadPdfToStorage(file);
+      setUploadedPdfUrl(storageDownloadUrl);
+      setPdfUploadStatus('success');
+      setNoticeForm(prev => ({
+        ...prev,
+        pdfUrl: storageDownloadUrl,
+        url: storageDownloadUrl
+      }));
+    } catch (storageErr: any) {
+      console.error('Firebase Storage PDF upload error:', storageErr);
+      const errMsg = storageErr?.message || 'Failed to upload PDF to Firebase Storage.';
+      setPdfUploadError(errMsg);
+      setPdfUploadStatus('error');
+      alert(`Firebase Storage Upload Notice:\n${errMsg}\n\nPlease verify that Firebase Storage rules and bucket configuration permit PDF uploads.`);
+    }
+
+    // 2. Rasterize PDF pages via PDF.js for crisp on-screen kiosk rendering
     try {
       // Load PDFjs dynamically from secure CDN
       if (!(window as any).pdfjsLib) {
@@ -288,16 +329,16 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
           }
 
           extractedPages.push({
-          pageNumber: i,
-          title: noticeForm.title
-            ? `${noticeForm.title} - Page ${i}`
-            : `Official Circular Page ${i}`,
-          content:
-            textParagraphs.length > 0
-              ? textParagraphs
-              : [`View attached official circular document page ${i}.`],
-          ...(pageImageUrl ? { pageImageUrl } : {})
-        });
+            pageNumber: i,
+            title: noticeForm.title
+              ? `${noticeForm.title} - Page ${i}`
+              : `Official Circular Page ${i}`,
+            content:
+              textParagraphs.length > 0
+                ? textParagraphs
+                : [`View attached official circular document page ${i}.`],
+            ...(pageImageUrl ? { pageImageUrl } : {})
+          });
         }
       }
 
@@ -307,8 +348,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
       }));
       
     } catch (err: any) {
-      console.error(err);
-      alert(`Error loading PDF: ${err.message || 'The PDF document structure could not be rasterized.'}`);
+      console.warn("PDF rasterization note:", err);
     } finally {
       setIsPdfLoading(false);
     }
@@ -318,6 +358,23 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
   const handleCreateNotice = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!noticeForm.title) return;
+
+    // Verify PDF upload completion if administrator selected PDF upload mode
+    if (noticeForm.type === 'pdf' && pdfSourceMethod === 'upload') {
+      if (isPdfLoading || pdfUploadStatus === 'uploading') {
+        alert('Please wait for the PDF to complete uploading to Firebase Storage before publishing.');
+        return;
+      }
+      if (!uploadedPdfUrl || !isValidPublicDocumentUrl(uploadedPdfUrl)) {
+        alert('Please select and upload a valid PDF document to Firebase Storage before publishing. The download URL is required for mobile QR linking.');
+        return;
+      }
+    }
+
+    // Determine actual scannable document URL for mobile phone scan
+    const resolvedDocUrl = noticeForm.type === 'pdf'
+      ? (pdfSourceMethod === 'upload' && isValidPublicDocumentUrl(uploadedPdfUrl) ? uploadedPdfUrl : '')
+      : (isValidPublicDocumentUrl(noticeForm.imageUrl) ? noticeForm.imageUrl : '');
 
     // Use uploaded pages if present and we are in upload mode
     const pages = noticeForm.type === 'pdf' 
@@ -332,37 +389,45 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
             ]
         )
       : undefined;
-      const newNotice: any = {
-  title: noticeForm.title,
-  category: noticeForm.category,
-  type: noticeForm.type,
-  priority: noticeForm.priority,
-  department: noticeForm.departments,
-  url: noticeForm.type === "pdf" ? "custom_pdf" : noticeForm.url,
-  imageUrl: noticeForm.imageUrl || "",
-  uploadedBy:
-    currentUser.role === "super-admin"
-      ? "Super Admin"
-      : `${currentUser.department} Dept Admin`,
-  startDateTime: new Date().toISOString(),
-  endDateTime: new Date(
-    Date.now() + 10 * 24 * 60 * 60 * 1000
-  ).toISOString(),
-  qrCodeData: `https://nbkrist.org/circulars/${Date.now()}`
-};
 
-if (noticeForm.type === "pdf") {
-  newNotice.pdfPages = (pages || []).map((page: any) => ({
-    pageNumber: page.pageNumber || 1,
-    title: page.title || "",
-    content: page.content || [],
-    ...(page.pageImageUrl ? { pageImageUrl: page.pageImageUrl } : {}),
-  }));
-}
+    const newNotice: any = {
+      title: noticeForm.title,
+      category: noticeForm.category,
+      type: noticeForm.type,
+      priority: noticeForm.priority,
+      department: noticeForm.departments,
+      url: noticeForm.type === "pdf" ? (resolvedDocUrl || "custom_pdf") : noticeForm.url,
+      pdfUrl: resolvedDocUrl || "",
+      imageUrl: noticeForm.imageUrl || "",
+      uploadedBy:
+        currentUser.role === "super-admin"
+          ? "Super Admin"
+          : `${currentUser.department} Dept Admin`,
+      startDateTime: new Date().toISOString(),
+      endDateTime: new Date(
+        Date.now() + 10 * 24 * 60 * 60 * 1000
+      ).toISOString(),
+      // Every notice/document must have its own QR code pointing to the actual Firebase Storage download URL
+      qrCodeData: resolvedDocUrl || ""
+    };
 
+    if (noticeForm.type === "pdf") {
+      newNotice.pdfPages = (pages || []).map((page: any) => ({
+        pageNumber: page.pageNumber || 1,
+        title: page.title || "",
+        content: page.content || [],
+        ...(page.pageImageUrl ? { pageImageUrl: page.pageImageUrl } : {}),
+      }));
+    }
 
     // Add to local/cached state store
     store.addNotice(newNotice);
+
+    // Reset upload state for next notice
+    setUploadedPdfUrl('');
+    setUploadedPdfFileName('');
+    setPdfUploadStatus('idle');
+    setPdfUploadError(null);
 
     // Persist to Firestore if configured
     try {
@@ -408,6 +473,7 @@ if (noticeForm.type === "pdf") {
       departments: ['ALL'],
       url: 'placement_drive',
       imageUrl: '',
+      pdfUrl: '',
       customContent: '',
       pdfPages: [{ pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'] }]
     });
@@ -1182,17 +1248,25 @@ if (noticeForm.type === "pdf") {
                               {isPdfLoading ? (
                                 <div className="flex flex-col items-center justify-center text-center">
                                   <div className="w-8 h-8 rounded-full border-2 border-t-cyan-400 border-slate-700 animate-spin mb-2" />
-                                  <span className="text-xs font-medium text-slate-300">Rasterizing PDF Pages...</span>
-                                  <span className="text-[9px] text-slate-500 mt-1 font-mono">Extracting high-fidelity vectors</span>
+                                  <span className="text-xs font-medium text-slate-300">Uploading to Firebase Storage & Rasterizing...</span>
+                                  <span className="text-[9px] text-slate-500 mt-1 font-mono">Generating secure download URL & QR mapping</span>
                                 </div>
                               ) : (
                                 <div className="flex flex-col items-center justify-center text-center">
                                   <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition mb-2" />
                                   <span className="text-xs font-semibold text-slate-350">Drag & Drop or Click to Select institutional PDF</span>
-                                  <span className="text-[9px] text-slate-500 mt-0.5">Loads multi-page PDF bulletins (Auto-renders & rotates)</span>
+                                  <span className="text-[9px] text-slate-500 mt-0.5">Uploads to Firebase Storage and generates mobile download QR</span>
                                 </div>
                               )}
                             </div>
+
+                            {/* Storage upload error notice */}
+                            {pdfUploadError && (
+                              <div className="p-2.5 bg-rose-950/40 border border-rose-500/30 rounded-lg flex items-center gap-2 text-rose-300 text-xs">
+                                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                                <span className="font-mono text-[10px] leading-tight">{pdfUploadError}</span>
+                              </div>
+                            )}
 
                             {noticeForm.pdfPages && noticeForm.pdfPages.length > 0 && noticeForm.pdfPages[0].pageImageUrl && (
                               <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
@@ -1202,18 +1276,27 @@ if (noticeForm.type === "pdf") {
                                       PDF
                                     </div>
                                     <div className="overflow-hidden">
-                                      <span className="block text-[9px] font-mono font-bold text-emerald-400 leading-none">✅ RASTERIZED SUCCESSFULLY</span>
+                                      <span className="block text-[9px] font-mono font-bold text-emerald-400 leading-none">
+                                        {uploadedPdfUrl ? '✅ STORED IN FIREBASE STORAGE & QR LINKED' : '✅ RASTERIZED SUCCESSFULLY'}
+                                      </span>
                                       <span className="block text-[10px] text-slate-300 truncate mt-0.5 max-w-[220px]">
-                                        {noticeForm.title || "Attached Document"} ({noticeForm.pdfPages.length} Pages detected)
+                                        {uploadedPdfFileName || noticeForm.title || "Attached Document"} ({noticeForm.pdfPages.length} Pages)
                                       </span>
                                     </div>
                                   </div>
                                   <button
                                     type="button"
-                                    onClick={() => setNoticeForm(prev => ({
-                                      ...prev,
-                                      pdfPages: [{ pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'] }]
-                                    }))}
+                                    onClick={() => {
+                                      setUploadedPdfUrl('');
+                                      setUploadedPdfFileName('');
+                                      setPdfUploadStatus('idle');
+                                      setPdfUploadError(null);
+                                      setNoticeForm(prev => ({
+                                        ...prev,
+                                        pdfUrl: '',
+                                        pdfPages: [{ pageNumber: 1, title: 'Document Title', content: ['Detailed content paragraph...'] }]
+                                      }));
+                                    }}
                                     className="text-xs text-rose-500 hover:text-rose-400 font-mono font-bold shrink-0"
                                   >
                                     [REMOVE]

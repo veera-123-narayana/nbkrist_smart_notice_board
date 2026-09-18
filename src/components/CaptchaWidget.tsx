@@ -120,6 +120,7 @@ export default function CaptchaWidget({
       const id = window.grecaptcha.render(containerRef.current, {
         sitekey: siteKey,
         theme: "dark",
+        size: "normal",
         callback: handleVerify,
         "expired-callback": handleExpire,
         "error-callback": handleWidgetError,
@@ -220,6 +221,19 @@ export default function CaptchaWidget({
       </div>
     </div>
   );
+}
+
+/**
+ * Resets the Google reCAPTCHA checkbox widget back to its initial unchecked state.
+ */
+export function resetRecaptcha(): void {
+  if (typeof window !== "undefined" && window.grecaptcha?.reset) {
+    try {
+      window.grecaptcha.reset();
+    } catch {
+      // Ignore if no active widget
+    }
+  }
 }
 
 /**

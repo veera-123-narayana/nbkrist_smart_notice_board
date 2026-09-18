@@ -15,6 +15,7 @@ import {
   saveCachedThemes,
   saveCachedScreens,
 } from './services/cache/offlineCache';
+import { isValidPublicDocumentUrl } from './utils/documentUrl';
 
 // Channel for multi-tab real-time sync in the browser
 const SYNC_CHANNEL_NAME = 'nbkrist_noticeboard_live_sync';
@@ -61,6 +62,31 @@ const saveToStorage = <T>(key: string, value: T) => {
   }
 };
 
+/**
+ * Sanitizes notices so that any obsolete, sample, or dummy 404 URLs
+ * (such as nbkrist.org/circulars/... or Date.now() dummy URLs) are cleared.
+ * Ensures QR codes only link to genuine, valid public download URLs.
+ */
+export function sanitizeNotice(notice: Notice): Notice {
+  const n = { ...notice };
+  if (n.type === 'pdf') {
+    if (n.pdfUrl && !isValidPublicDocumentUrl(n.pdfUrl)) {
+      n.pdfUrl = '';
+    }
+    if (n.qrCodeData && !isValidPublicDocumentUrl(n.qrCodeData)) {
+      n.qrCodeData = '';
+    }
+    if (n.url && !isValidPublicDocumentUrl(n.url)) {
+      n.url = 'custom_pdf';
+    }
+  } else {
+    if (n.qrCodeData && !isValidPublicDocumentUrl(n.qrCodeData)) {
+      n.qrCodeData = '';
+    }
+  }
+  return n;
+}
+
 // Singleton global state with event emitter
 class GlobalStateEngine {
   private notices: Notice[] = [];
@@ -74,7 +100,7 @@ class GlobalStateEngine {
   private isInitializedFromCache = false;
 
   constructor() {
-    this.notices = loadFromStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES);
+    this.notices = loadFromStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES).map(sanitizeNotice);
     this.alerts = loadFromStorage(STORAGE_KEYS.ALERTS, INITIAL_ALERTS);
     this.themes = loadFromStorage(STORAGE_KEYS.THEMES, DEFAULT_THEMES);
     this.screens = loadFromStorage(STORAGE_KEYS.SCREENS, INITIAL_SCREENS);
@@ -117,7 +143,7 @@ class GlobalStateEngine {
 
       let hasUpdates = false;
       if (cachedNotices && cachedNotices.length > 0) {
-        this.notices = cachedNotices;
+        this.notices = cachedNotices.map(sanitizeNotice);
         hasUpdates = true;
       }
       if (cachedAlerts && cachedAlerts.length > 0) {
@@ -146,7 +172,7 @@ class GlobalStateEngine {
     try {
       subscribeNotices((data) => {
         if (data && data.length > 0) {
-          this.notices = data as Notice[];
+          this.notices = (data as Notice[]).map(sanitizeNotice);
           saveCachedNotices(this.notices).catch(() => {});
           saveToStorage(STORAGE_KEYS.NOTICES, this.notices);
           this.notify();
@@ -236,7 +262,7 @@ class GlobalStateEngine {
   }
 
   private syncFromLocalStorage() {
-    this.notices = loadFromStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES);
+    this.notices = loadFromStorage(STORAGE_KEYS.NOTICES, INITIAL_NOTICES).map(sanitizeNotice);
     this.alerts = loadFromStorage(STORAGE_KEYS.ALERTS, INITIAL_ALERTS);
     this.themes = loadFromStorage(STORAGE_KEYS.THEMES, DEFAULT_THEMES);
     this.screens = loadFromStorage(STORAGE_KEYS.SCREENS, INITIAL_SCREENS);
@@ -315,12 +341,12 @@ class GlobalStateEngine {
   }
 
   public addNotice(notice: Omit<Notice, 'id' | 'createdAt' | 'isArchived'>) {
-    const newNotice: Notice = {
+    const newNotice: Notice = sanitizeNotice({
       ...notice,
       id: `notice-${Date.now()}`,
       createdAt: new Date().toISOString(),
       isArchived: false
-    };
+    });
     this.notices = [newNotice, ...this.notices];
     saveToStorage(STORAGE_KEYS.NOTICES, this.notices);
     this.addLog(this.activeUser.email, 'CREATED_NOTICE', `Created notice: ${notice.title}`);

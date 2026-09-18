@@ -127,7 +127,7 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-08T10:00:00Z',
     startDateTime: '2026-06-09T09:00:00Z',
     endDateTime: '2026-06-20T17:00:00Z',
-    qrCodeData: 'https://nbkrist.org/placements/tcs-recruitment-2026',
+    qrCodeData: '',
     isArchived: false
   },
   {
@@ -142,7 +142,8 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-09T08:30:00Z',
     startDateTime: '2026-06-09T08:00:00Z',
     endDateTime: '2026-06-25T18:00:00Z',
-    qrCodeData: 'https://nbkrist.org/exams/timetable-btech-4-2-june2026.pdf',
+    pdfUrl: '',
+    qrCodeData: '',
     isArchived: false,
     pdfPages: [
       {
@@ -180,7 +181,7 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-07T14:30:00Z',
     startDateTime: '2026-06-07T08:00:00Z',
     endDateTime: '2026-06-18T16:00:00Z',
-    qrCodeData: 'https://nbkrist.org/adhyayan-2026/register',
+    qrCodeData: '',
     isArchived: false
   },
   {
@@ -195,7 +196,8 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-05T09:00:00Z',
     startDateTime: '2026-06-05T09:00:00Z',
     endDateTime: '2026-06-30T17:00:00Z',
-    qrCodeData: 'https://nbkrist.org/academic-calendar-2026-27.pdf',
+    pdfUrl: '',
+    qrCodeData: '',
     isArchived: false,
     pdfPages: [
       {
@@ -232,7 +234,7 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-08T11:00:00Z',
     startDateTime: '2026-06-08T11:00:00Z',
     endDateTime: '2026-06-15T16:00:00Z',
-    qrCodeData: 'https://nbkrist.org/mech-expo-2026-register',
+    qrCodeData: '',
     isArchived: false
   },
   {
@@ -247,7 +249,8 @@ export const INITIAL_NOTICES: Notice[] = [
     createdAt: '2026-06-06T15:00:00Z',
     startDateTime: '2026-06-06T12:00:00Z',
     endDateTime: '2026-06-14T17:00:00Z',
-    qrCodeData: 'https://nbkrist.org/ece/ieee-antenna-workshop-credentials',
+    pdfUrl: '',
+    qrCodeData: '',
     isArchived: false,
     pdfPages: [
       {

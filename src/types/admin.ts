@@ -27,6 +27,8 @@ export interface Notice {
 
   imageUrl?: string;
 
+  pdfUrl?: string;
+
   uploadedBy: string;
 
   createdAt?: any;

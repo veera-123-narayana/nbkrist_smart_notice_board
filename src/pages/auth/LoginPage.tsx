@@ -2,7 +2,7 @@ import { useState } from "react";
 import { login } from "../../services/auth/authService";
 import { getUserByUID } from "../../firebase/firestore";
 import { storeEngine } from "../../store";
-import CaptchaWidget, { verifyCaptchaWithBackend } from "../../components/CaptchaWidget";
+import CaptchaWidget, { verifyCaptchaWithBackend, resetRecaptcha } from "../../components/CaptchaWidget";
 
 const LoginPage = () => {
   const [email, setEmail] = useState("");
@@ -36,6 +36,8 @@ const LoginPage = () => {
       const captchaResult = await verifyCaptchaWithBackend(captchaToken);
       if (!captchaResult.success) {
         setError(captchaResult.error || "Security verification failed. Please try again.");
+        setCaptchaToken("");
+        resetRecaptcha();
         setLoading(false);
         return;
       }
@@ -64,6 +66,8 @@ const LoginPage = () => {
     } catch (err: any) {
       console.error("Firebase Login Error:", err);
       setError(err.message || "Failed to sign in. Please verify your credentials.");
+      setCaptchaToken("");
+      resetRecaptcha();
     } finally {
       setLoading(false);
     }

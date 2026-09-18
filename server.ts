@@ -7,8 +7,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilename = typeof import.meta !== "undefined" && import.meta.url ? fileURLToPath(import.meta.url) : (typeof __filename !== "undefined" ? __filename : "");
+const currentDirname = currentFilename ? path.dirname(currentFilename) : process.cwd();
 
 // Google reCAPTCHA v2 Secret Key (Backend-Only, Never Expose to Client)
 // In production, CAPTCHA_SECRET (or RECAPTCHA_SECRET_KEY) must be provided in the server environment
@@ -18,7 +18,7 @@ const DEV_TEST_CAPTCHA_SECRET = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 10000;
+  const PORT = 3000;
   const isProduction = process.env.NODE_ENV === "production";
 
   // Parse allowed origins from FRONTEND_URL environment variable
@@ -84,7 +84,11 @@ async function startServer() {
   // Google reCAPTCHA v2 Verification Endpoint
   app.post("/api/auth/captcha/verify", async (req, res) => {
     try {
-      const recaptchaToken = req.body.recaptchaToken || req.body.token || req.body.captchaToken;
+      const recaptchaToken =
+        req.body.recaptchaToken ||
+        req.body.token ||
+        req.body.captchaToken ||
+        req.body["g-recaptcha-response"];
 
       if (!recaptchaToken || typeof recaptchaToken !== "string") {
         return res.status(400).json({

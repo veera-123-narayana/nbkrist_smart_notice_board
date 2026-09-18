@@ -5,6 +5,7 @@ export interface Notice {
   type: 'image' | 'pdf';
   url: string; // Image URL or visual asset description
   imageUrl?: string; // Opt-in base64 uploaded or pasted external image URL to display
+  pdfUrl?: string; // Direct Firebase Storage public download URL for attached PDF document
   category: 'circular' | 'placement' | 'event' | 'timetable' | 'exam' | 'general';
   priority: 'emergency' | 'urgent' | 'important' | 'high' | 'medium' | 'normal';
   uploadedBy: string;
