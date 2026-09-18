@@ -335,8 +335,25 @@ NBKRIST Automated Broadcast
         bucketAccessible: false,
         supabaseRequestTimeMs: 0,
         error: "Supabase credentials not configured. Please ensure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set in Render backend environment variables.",
+        errorName: "ConfigurationError",
+        errorMessage: "Supabase credentials not configured.",
+        errorCauseMessage: null,
+        errorCauseCode: "ERR_MISSING_CREDENTIALS",
+        errorCauseName: null,
       });
     }
+
+    // Helper to safely scrub any accidental secret keys or token values
+    const sanitize = (val: string | null | undefined): string | null => {
+      if (!val) return null;
+      let text = String(val);
+      if (serviceRoleKey && serviceRoleKey.length > 5) {
+        text = text.split(serviceRoleKey).join("[REDACTED_KEY]");
+      }
+      // Redact potential Bearer tokens or sensitive authorization headers
+      text = text.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+      return text;
+    };
 
     const startTime = Date.now();
     try {
@@ -345,13 +362,30 @@ NBKRIST Automated Broadcast
       const supabaseRequestTimeMs = Date.now() - startTime;
 
       if (bucketError) {
+        const errorObj: any = bucketError;
+        const causeObj: any = errorObj?.cause || errorObj?.originalError?.cause || errorObj?.originalError;
+        const subCause: any = (causeObj?.errors && Array.isArray(causeObj.errors) && causeObj.errors.length > 0)
+          ? causeObj.errors[0]
+          : causeObj;
+
+        const errorName = errorObj?.name || errorObj?.constructor?.name || "StorageApiError";
+        const errorMessage = errorObj?.message || "Failed to retrieve notice-files bucket from Supabase Storage.";
+        const errorCauseMessage = subCause?.message || causeObj?.message || null;
+        const errorCauseCode = subCause?.code || causeObj?.code || errorObj?.code || null;
+        const errorCauseName = subCause?.name || causeObj?.name || null;
+
         return res.status(502).json({
           supabaseUrlConfigured: true,
           serviceRoleKeyConfigured: true,
           bucket: "notice-files",
           bucketAccessible: false,
           supabaseRequestTimeMs,
-          error: bucketError.message || "Failed to retrieve notice-files bucket from Supabase Storage.",
+          error: sanitize(errorMessage),
+          errorName: sanitize(errorName),
+          errorMessage: sanitize(errorMessage),
+          errorCauseMessage: sanitize(errorCauseMessage),
+          errorCauseCode: sanitize(errorCauseCode),
+          errorCauseName: sanitize(errorCauseName),
         });
       }
 
@@ -362,16 +396,38 @@ NBKRIST Automated Broadcast
         bucketAccessible: !!bucket,
         supabaseRequestTimeMs,
         error: null,
+        errorName: null,
+        errorMessage: null,
+        errorCauseMessage: null,
+        errorCauseCode: null,
+        errorCauseName: null,
       });
     } catch (err: any) {
       const supabaseRequestTimeMs = Date.now() - startTime;
+      const errorObj: any = err;
+      const causeObj: any = errorObj?.cause || errorObj?.originalError?.cause || errorObj?.originalError;
+      const subCause: any = (causeObj?.errors && Array.isArray(causeObj.errors) && causeObj.errors.length > 0)
+        ? causeObj.errors[0]
+        : causeObj;
+
+      const errorName = errorObj?.name || errorObj?.constructor?.name || "Error";
+      const errorMessage = errorObj?.message || "Internal exception during Supabase Storage diagnostics.";
+      const errorCauseMessage = subCause?.message || causeObj?.message || null;
+      const errorCauseCode = subCause?.code || causeObj?.code || errorObj?.code || null;
+      const errorCauseName = subCause?.name || causeObj?.name || null;
+
       return res.status(500).json({
         supabaseUrlConfigured: true,
         serviceRoleKeyConfigured: true,
         bucket: "notice-files",
         bucketAccessible: false,
         supabaseRequestTimeMs,
-        error: err?.message || "Internal exception during Supabase Storage diagnostics.",
+        error: sanitize(errorMessage),
+        errorName: sanitize(errorName),
+        errorMessage: sanitize(errorMessage),
+        errorCauseMessage: sanitize(errorCauseMessage),
+        errorCauseCode: sanitize(errorCauseCode),
+        errorCauseName: sanitize(errorCauseName),
       });
     }
   });
