@@ -70,9 +70,10 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const isProduction = process.env.NODE_ENV === "production";
 
-  // Parse allowed origins from FRONTEND_URL environment variable and include Netlify frontend
+  // Parse allowed origins from FRONTEND_URL environment variable and include Netlify frontend & Render backend
   const allowedOrigins: string[] = [
     "https://nbkristnoticeboard.netlify.app",
+    "https://nbkrist-smart-notice-board.onrender.com",
   ];
   if (process.env.FRONTEND_URL) {
     process.env.FRONTEND_URL.split(",")
@@ -85,7 +86,7 @@ async function startServer() {
       });
   }
 
-  // Configure CORS for Netlify frontend integration
+  // Configure CORS for Netlify frontend and Render backend integration
   app.use(
     cors({
       origin: (origin, callback) => {
@@ -95,13 +96,17 @@ async function startServer() {
         // Normalize origin without trailing slash
         const cleanOrigin = origin.replace(/\/+$/, "");
 
-        // Match against explicitly configured FRONTEND_URL or default Netlify domain
+        // Match against explicitly configured FRONTEND_URL or default Netlify / Render domains
         if (allowedOrigins.includes(cleanOrigin)) {
           return callback(null, true);
         }
 
-        // Allow any netlify.app or run.app preview deployments
-        if (cleanOrigin.endsWith(".netlify.app") || cleanOrigin.endsWith(".run.app")) {
+        // Allow any netlify.app, onrender.com, or run.app preview deployments
+        if (
+          cleanOrigin.endsWith(".netlify.app") ||
+          cleanOrigin.endsWith(".onrender.com") ||
+          cleanOrigin.endsWith(".run.app")
+        ) {
           return callback(null, true);
         }
 
@@ -309,6 +314,64 @@ NBKRIST Automated Broadcast
       return res.status(500).json({
         success: false,
         error: err?.message || "Internal server error",
+      });
+    }
+  });
+
+  // TEMPORARY DIAGNOSTIC ENDPOINT: GET /api/storage/diagnostics
+  // Purpose: Diagnose Supabase Storage latency, connectivity, and bucket existence without exposing secrets.
+  app.get("/api/storage/diagnostics", async (_req, res) => {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+
+    const supabaseUrlConfigured = Boolean(supabaseUrl && supabaseUrl.trim().length > 0);
+    const serviceRoleKeyConfigured = Boolean(serviceRoleKey && serviceRoleKey.trim().length > 0);
+
+    if (!supabaseUrlConfigured || !serviceRoleKeyConfigured) {
+      return res.status(500).json({
+        supabaseUrlConfigured,
+        serviceRoleKeyConfigured,
+        bucket: "notice-files",
+        bucketAccessible: false,
+        supabaseRequestTimeMs: 0,
+        error: "Supabase credentials not configured. Please ensure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set in Render backend environment variables.",
+      });
+    }
+
+    const startTime = Date.now();
+    try {
+      const supabase = getSupabaseClient();
+      const { data: bucket, error: bucketError } = await supabase.storage.getBucket("notice-files");
+      const supabaseRequestTimeMs = Date.now() - startTime;
+
+      if (bucketError) {
+        return res.status(502).json({
+          supabaseUrlConfigured: true,
+          serviceRoleKeyConfigured: true,
+          bucket: "notice-files",
+          bucketAccessible: false,
+          supabaseRequestTimeMs,
+          error: bucketError.message || "Failed to retrieve notice-files bucket from Supabase Storage.",
+        });
+      }
+
+      return res.json({
+        supabaseUrlConfigured: true,
+        serviceRoleKeyConfigured: true,
+        bucket: "notice-files",
+        bucketAccessible: !!bucket,
+        supabaseRequestTimeMs,
+        error: null,
+      });
+    } catch (err: any) {
+      const supabaseRequestTimeMs = Date.now() - startTime;
+      return res.status(500).json({
+        supabaseUrlConfigured: true,
+        serviceRoleKeyConfigured: true,
+        bucket: "notice-files",
+        bucketAccessible: false,
+        supabaseRequestTimeMs,
+        error: err?.message || "Internal exception during Supabase Storage diagnostics.",
       });
     }
   });
