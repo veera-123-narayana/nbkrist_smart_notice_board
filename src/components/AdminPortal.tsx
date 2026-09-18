@@ -9,7 +9,7 @@ import { sendTelegramNotice } from "../services/telegram/telegramService";
 import useScreens from "../hooks/useScreens";
 import { login } from "../services/auth/authService";
 import CaptchaWidget, { verifyCaptchaWithBackend, resetRecaptcha } from "./CaptchaWidget";
-import { uploadPdfToStorage } from '../firebase/storage';
+import { uploadFileToSupabase } from '../services/storage/supabaseUploadService';
 import { isValidPublicDocumentUrl } from '../utils/documentUrl';
 
 import { 
@@ -127,6 +127,8 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
   const [pdfUploadError, setPdfUploadError] = useState<string | null>(null);
   const [uploadedPdfUrl, setUploadedPdfUrl] = useState<string>('');
   const [uploadedPdfFileName, setUploadedPdfFileName] = useState<string>('');
+  const [isImageUploading, setIsImageUploading] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [noticeForm, setNoticeForm] = useState<{
     title: string;
     category: Notice['category'];
@@ -248,41 +250,8 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     setShowRoleSelector(false);
   };
 
-  // Handle uploading and parsing a real PDF document
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please upload a valid PDF document file (.pdf).');
-      return;
-    }
-
-    setIsPdfLoading(true);
-    setPdfUploadStatus('uploading');
-    setPdfUploadError(null);
-    setUploadedPdfFileName(file.name);
-
-    // 1. Store the PDF in Firebase Storage and obtain the download URL
-    let storageDownloadUrl = '';
-    try {
-      storageDownloadUrl = await uploadPdfToStorage(file);
-      setUploadedPdfUrl(storageDownloadUrl);
-      setPdfUploadStatus('success');
-      setNoticeForm(prev => ({
-        ...prev,
-        pdfUrl: storageDownloadUrl,
-        url: storageDownloadUrl
-      }));
-    } catch (storageErr: any) {
-      console.error('Firebase Storage PDF upload error:', storageErr);
-      const errMsg = storageErr?.message || 'Failed to upload PDF to Firebase Storage.';
-      setPdfUploadError(errMsg);
-      setPdfUploadStatus('error');
-      alert(`Firebase Storage Upload Notice:\n${errMsg}\n\nPlease verify that Firebase Storage rules and bucket configuration permit PDF uploads.`);
-    }
-
-    // 2. Rasterize PDF pages via PDF.js for crisp on-screen kiosk rendering
+  // Helper to asynchronously extract PDF preview thumbnails in the background without blocking upload or publish
+  const extractPdfPreviewsAsync = async (file: File) => {
     try {
       // Load PDFjs dynamically from secure CDN
       if (!(window as any).pdfjsLib) {
@@ -300,57 +269,132 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
 
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const totalPages = pdf.numPages;
+      const totalPages = Math.min(pdf.numPages, 10);
       const extractedPages = [];
 
       for (let i = 1; i <= totalPages; i++) {
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1.5 }); // High resolution render
-        
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        if (context) {
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
+        try {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.2 }); // Fast, crisp resolution render
           
-          await page.render({ canvasContext: context, viewport }).promise;
-          const pageImageUrl = canvas.toDataURL('image/jpeg', 0.85);
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          if (context) {
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({ canvasContext: context, viewport }).promise;
+            const pageImageUrl = canvas.toDataURL('image/jpeg', 0.85);
 
-          // Extract text content if available for screen-reader / fallback search
-          let textParagraphs: string[] = [];
-          try {
-            const textContext = await page.getTextContent();
-            const textItems = textContext.items.map((item: any) => item.str).join(' ');
-            if (textItems.trim()) {
-              textParagraphs = textItems.split(/\s{2,}/).filter((s: string) => s.trim().length > 3);
+            // Extract text content if available for screen-reader / fallback search
+            let textParagraphs: string[] = [];
+            try {
+              const textContext = await page.getTextContent();
+              const textItems = textContext.items.map((item: any) => item.str).join(' ');
+              if (textItems.trim()) {
+                textParagraphs = textItems.split(/\s{2,}/).filter((s: string) => s.trim().length > 3);
+              }
+            } catch (err) {
+              console.warn("Could not parse text on page", i, err);
             }
-          } catch (err) {
-            console.warn("Could not parse text on page", i, err);
-          }
 
-          extractedPages.push({
-            pageNumber: i,
-            title: noticeForm.title
-              ? `${noticeForm.title} - Page ${i}`
-              : `Official Circular Page ${i}`,
-            content:
-              textParagraphs.length > 0
-                ? textParagraphs
-                : [`View attached official circular document page ${i}.`],
-            ...(pageImageUrl ? { pageImageUrl } : {})
-          });
+            extractedPages.push({
+              pageNumber: i,
+              title: noticeForm.title
+                ? `${noticeForm.title} - Page ${i}`
+                : `Official Circular Page ${i}`,
+              content:
+                textParagraphs.length > 0
+                  ? textParagraphs
+                  : [`View attached official circular document page ${i}.`],
+              ...(pageImageUrl ? { pageImageUrl } : {})
+            });
+          }
+        } catch (pageErr) {
+          console.warn(`Error rendering preview for page ${i}:`, pageErr);
         }
       }
 
-      setNoticeForm(prev => ({
-        ...prev,
-        pdfPages: extractedPages
-      }));
-      
+      if (extractedPages.length > 0) {
+        setNoticeForm(prev => ({
+          ...prev,
+          pdfPages: extractedPages
+        }));
+      }
     } catch (err: any) {
-      console.warn("PDF rasterization note:", err);
+      console.warn("PDF preview extraction note (original PDF remains safe in Supabase Storage):", err);
     } finally {
       setIsPdfLoading(false);
+    }
+  };
+
+  // Handle uploading and parsing a real PDF document to Supabase Storage ('notice-files' bucket)
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Please upload a valid PDF document file (.pdf).');
+      return;
+    }
+
+    setIsPdfLoading(true);
+    setPdfUploadStatus('uploading');
+    setPdfUploadError(null);
+    setUploadedPdfFileName(file.name);
+
+    // 1. Upload the original PDF to Supabase Storage immediately after user selects it
+    let storageDownloadUrl = '';
+    try {
+      const uploadResult = await uploadFileToSupabase(file);
+      storageDownloadUrl = uploadResult.publicUrl;
+      setUploadedPdfUrl(storageDownloadUrl);
+      setPdfUploadStatus('success');
+      setNoticeForm(prev => ({
+        ...prev,
+        pdfUrl: storageDownloadUrl,
+        url: storageDownloadUrl,
+        qrCodeData: storageDownloadUrl,
+        title: prev.title || file.name.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ')
+      }));
+    } catch (storageErr: any) {
+      console.error('Supabase Storage PDF upload error:', storageErr);
+      const errMsg = storageErr?.message || 'Failed to upload PDF to Supabase Storage bucket notice-files.';
+      setPdfUploadError(errMsg);
+      setPdfUploadStatus('error');
+      setIsPdfLoading(false);
+      alert(`Supabase Storage Upload Notice:\n${errMsg}\n\nPlease verify that SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are configured in the Render backend environment.`);
+      return;
+    }
+
+    // 2. Extract PDF page previews asynchronously in the background.
+    // This runs separately and NEVER blocks the original PDF upload or notice publishing.
+    // The original PDF remains available in Supabase Storage even if preview generation fails.
+    extractPdfPreviewsAsync(file);
+  };
+
+  // Handle uploading a poster/flyer image to Supabase Storage ('notice-files' bucket)
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImageUploading(true);
+    setImageUploadError(null);
+
+    try {
+      const uploadResult = await uploadFileToSupabase(file);
+      setNoticeForm(prev => ({
+        ...prev,
+        imageUrl: uploadResult.publicUrl,
+        url: prev.url || uploadResult.publicUrl
+      }));
+    } catch (err: any) {
+      console.error('Supabase Storage Image upload error:', err);
+      const errMsg = err?.message || 'Failed to upload image to Supabase Storage bucket notice-files.';
+      setImageUploadError(errMsg);
+      alert(`Supabase Storage Upload Notice:\n${errMsg}`);
+    } finally {
+      setIsImageUploading(false);
     }
   };
 
@@ -360,13 +404,14 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
     if (!noticeForm.title) return;
 
     // Verify PDF upload completion if administrator selected PDF upload mode
+    // Only block if the original PDF upload to Supabase Storage is actively in flight
     if (noticeForm.type === 'pdf' && pdfSourceMethod === 'upload') {
-      if (isPdfLoading || pdfUploadStatus === 'uploading') {
-        alert('Please wait for the PDF to complete uploading to Firebase Storage before publishing.');
+      if (pdfUploadStatus === 'uploading') {
+        alert('Please wait for the PDF to complete uploading to Supabase Storage before publishing.');
         return;
       }
       if (!uploadedPdfUrl || !isValidPublicDocumentUrl(uploadedPdfUrl)) {
-        alert('Please select and upload a valid PDF document to Firebase Storage before publishing. The download URL is required for mobile QR linking.');
+        alert('Please select and upload a valid PDF document to Supabase Storage before publishing. The download URL is required for mobile QR linking.');
         return;
       }
     }
@@ -383,8 +428,10 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
           : [
               {
                 pageNumber: 1,
-                title: noticeForm.title + ' - Reference',
-                content: noticeForm.customContent.split('\n').filter(p => p.trim() !== '')
+                title: noticeForm.title ? `${noticeForm.title} - Official Document` : (uploadedPdfFileName || 'Official Circular'),
+                content: noticeForm.customContent && noticeForm.customContent.trim()
+                  ? noticeForm.customContent.split('\n').filter(p => p.trim() !== '')
+                  : ['Official circular attachment published to the digital notice board. Scan the QR code with any smartphone to open and read the original document directly.']
               }
             ]
         )
@@ -1135,26 +1182,36 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
                           </div>
                         ) : (
                           <div className="space-y-3">
-                            <div className="border border-dashed border-slate-700 bg-slate-905 hover:bg-slate-900 hover:border-slate-500 transition rounded-xl p-4 flex flex-col items-center justify-center relative cursor-pointer group">
+                            <div className="border border-dashed border-slate-700 bg-slate-905 hover:bg-slate-900 hover:border-slate-500 transition rounded-xl p-4 flex flex-col items-center justify-center relative cursor-pointer group min-h-[120px]">
                               <input 
                                 type="file"
                                 accept="image/*"
                                 className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                      setNoticeForm({ ...noticeForm, imageUrl: reader.result as string });
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
+                                onChange={handleImageUpload}
+                                disabled={isImageUploading}
                               />
-                              <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition mb-2" />
-                              <span className="text-xs font-semibold text-slate-350">Drag & Drop or Click to Select circular flyer</span>
-                              <span className="text-[9px] text-slate-500 mt-0.5">Supports PNG, JPG, WEBP (Max 5MB)</span>
+                              {isImageUploading ? (
+                                <div className="flex flex-col items-center justify-center text-center">
+                                  <div className="w-8 h-8 rounded-full border-2 border-t-cyan-400 border-slate-700 animate-spin mb-2" />
+                                  <span className="text-xs font-medium text-slate-300">Uploading to Supabase Storage...</span>
+                                  <span className="text-[9px] text-slate-500 mt-1 font-mono">Storing in notice-files bucket</span>
+                                </div>
+                              ) : (
+                                <>
+                                  <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition mb-2" />
+                                  <span className="text-xs font-semibold text-slate-350">Drag & Drop or Click to Select circular flyer</span>
+                                  <span className="text-[9px] text-slate-500 mt-0.5">Uploads to Supabase Storage (notice-files)</span>
+                                </>
+                              )}
                             </div>
+
+                            {/* Image storage upload error notice */}
+                            {imageUploadError && (
+                              <div className="p-2.5 bg-rose-950/40 border border-rose-500/30 rounded-lg flex items-center gap-2 text-rose-300 text-xs">
+                                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                                <span className="font-mono text-[10px] leading-tight">{imageUploadError}</span>
+                              </div>
+                            )}
 
                             <div>
                               <p className="text-[9px] text-slate-500 text-center uppercase tracking-wider font-mono my-1">- OR PASTE WEB IMAGE URL -</p>
@@ -1177,7 +1234,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
                                     className="w-10 h-10 object-cover rounded border border-slate-700 shrink-0"
                                   />
                                   <div className="overflow-hidden">
-                                    <span className="block text-[9px] font-mono font-bold text-emerald-400 leading-none">✅ ATTACHED SUCCESSFULLY</span>
+                                    <span className="block text-[9px] font-mono font-bold text-emerald-400 leading-none">✅ STORED IN SUPABASE STORAGE</span>
                                     <span className="block text-[8px] text-slate-500 truncate mt-0.5 max-w-[220px]">{noticeForm.imageUrl.slice(0, 50)}...</span>
                                   </div>
                                 </div>
@@ -1248,14 +1305,14 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
                               {isPdfLoading ? (
                                 <div className="flex flex-col items-center justify-center text-center">
                                   <div className="w-8 h-8 rounded-full border-2 border-t-cyan-400 border-slate-700 animate-spin mb-2" />
-                                  <span className="text-xs font-medium text-slate-300">Uploading to Firebase Storage & Rasterizing...</span>
-                                  <span className="text-[9px] text-slate-500 mt-1 font-mono">Generating secure download URL & QR mapping</span>
+                                  <span className="text-xs font-medium text-slate-300">Uploading to Supabase Storage & Preparing Preview...</span>
+                                  <span className="text-[9px] text-slate-500 mt-1 font-mono">Storing in notice-files bucket & mapping QR</span>
                                 </div>
                               ) : (
                                 <div className="flex flex-col items-center justify-center text-center">
                                   <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition mb-2" />
                                   <span className="text-xs font-semibold text-slate-350">Drag & Drop or Click to Select institutional PDF</span>
-                                  <span className="text-[9px] text-slate-500 mt-0.5">Uploads to Firebase Storage and generates mobile download QR</span>
+                                  <span className="text-[9px] text-slate-500 mt-0.5">Uploads to Supabase Storage (notice-files) & generates mobile download QR</span>
                                 </div>
                               )}
                             </div>
@@ -1277,7 +1334,7 @@ export default function AdminPortal({ onLaunchKiosk }: AdminPortalProps) {
                                     </div>
                                     <div className="overflow-hidden">
                                       <span className="block text-[9px] font-mono font-bold text-emerald-400 leading-none">
-                                        {uploadedPdfUrl ? '✅ STORED IN FIREBASE STORAGE & QR LINKED' : '✅ RASTERIZED SUCCESSFULLY'}
+                                        {uploadedPdfUrl ? '✅ STORED IN SUPABASE STORAGE & QR LINKED' : '✅ RASTERIZED SUCCESSFULLY'}
                                       </span>
                                       <span className="block text-[10px] text-slate-300 truncate mt-0.5 max-w-[220px]">
                                         {uploadedPdfFileName || noticeForm.title || "Attached Document"} ({noticeForm.pdfPages.length} Pages)

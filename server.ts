@@ -4,6 +4,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import multer from "multer";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -16,18 +18,71 @@ const CAPTCHA_SECRET = process.env.CAPTCHA_SECRET || process.env.RECAPTCHA_SECRE
 // Official Google reCAPTCHA v2 test secret key (always passes) for local development testing
 const DEV_TEST_CAPTCHA_SECRET = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
 
+// Lazy Supabase Client Initialization (Render Backend-Only, Never Expose to Client)
+let supabaseClient: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient {
+  if (!supabaseClient) {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error(
+        "Supabase credentials not configured. Please ensure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set in Render backend environment variables."
+      );
+    }
+    supabaseClient = createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  }
+  return supabaseClient;
+}
+
+// Configure multer for in-memory multipart upload handling with 50 MB limit
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50 MB maximum
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = [
+      "application/pdf",
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/svg+xml",
+    ];
+    if (allowedMimeTypes.includes(file.mimetype.toLowerCase())) {
+      cb(null, true);
+    } else {
+      cb(new Error("INVALID_MIME_TYPE"));
+    }
+  },
+});
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   const isProduction = process.env.NODE_ENV === "production";
 
-  // Parse allowed origins from FRONTEND_URL environment variable
-  const allowedOrigins: string[] = [];
+  // Parse allowed origins from FRONTEND_URL environment variable and include Netlify frontend
+  const allowedOrigins: string[] = [
+    "https://nbkristnoticeboard.netlify.app",
+  ];
   if (process.env.FRONTEND_URL) {
     process.env.FRONTEND_URL.split(",")
       .map((url) => url.trim().replace(/\/+$/, ""))
       .filter(Boolean)
-      .forEach((url) => allowedOrigins.push(url));
+      .forEach((url) => {
+        if (!allowedOrigins.includes(url)) {
+          allowedOrigins.push(url);
+        }
+      });
   }
 
   // Configure CORS for Netlify frontend integration
@@ -40,17 +95,19 @@ async function startServer() {
         // Normalize origin without trailing slash
         const cleanOrigin = origin.replace(/\/+$/, "");
 
-        // Match against explicitly configured FRONTEND_URL
+        // Match against explicitly configured FRONTEND_URL or default Netlify domain
         if (allowedOrigins.includes(cleanOrigin)) {
+          return callback(null, true);
+        }
+
+        // Allow any netlify.app or run.app preview deployments
+        if (cleanOrigin.endsWith(".netlify.app") || cleanOrigin.endsWith(".run.app")) {
           return callback(null, true);
         }
 
         // In development mode, allow localhost, 127.0.0.1, and preview environments
         if (!isProduction) {
           if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
-            return callback(null, true);
-          }
-          if (cleanOrigin.endsWith(".run.app") || cleanOrigin.endsWith(".netlify.app")) {
             return callback(null, true);
           }
           if (allowedOrigins.length === 0) {
@@ -62,7 +119,7 @@ async function startServer() {
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-admin-role", "x-admin-email"],
     })
   );
 
@@ -254,6 +311,106 @@ NBKRIST Automated Broadcast
         error: err?.message || "Internal server error",
       });
     }
+  });
+
+  // Supabase Storage Upload Endpoint for PDF documents and poster images
+  // Storage bucket: "notice-files"
+  app.post("/api/storage/upload", (req, res) => {
+    upload.single("file")(req, res, async (err: any) => {
+      if (err) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({
+            success: false,
+            error: "File size exceeds 50 MB maximum limit.",
+          });
+        }
+        if (err.message === "INVALID_MIME_TYPE") {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid file type. Only PDF documents and image files (PNG, JPG, WEBP, GIF, SVG) are allowed.",
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: err.message || "File upload processing error.",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: "No file provided. Please attach a file under the 'file' field.",
+        });
+      }
+
+      // Backend admin security verification
+      const authHeader = req.headers.authorization;
+      const adminRole = (req.headers["x-admin-role"] as string) || "";
+      const isAuthorizedRole = adminRole === "super-admin" || adminRole === "dept-admin";
+      const hasBearerToken = !!(authHeader && authHeader.startsWith("Bearer ") && authHeader.length > 10);
+
+      if (!isAuthorizedRole && !hasBearerToken) {
+        return res.status(403).json({
+          success: false,
+          error: "Unauthorized: Admin privileges required to upload files to notice storage.",
+        });
+      }
+
+      try {
+        const supabase = getSupabaseClient();
+        const file = req.file;
+        const originalName = file.originalname || (file.mimetype === "application/pdf" ? "circular.pdf" : "poster.jpg");
+        const cleanName = originalName.replace(/[^a-zA-Z0-9.-]/g, "_");
+        const timestamp = Date.now();
+        const randomSuffix = Math.random().toString(36).substring(2, 9);
+        const folder = file.mimetype === "application/pdf" ? "circulars" : "posters";
+        const storagePath = `${folder}/${timestamp}_${randomSuffix}_${cleanName}`;
+
+        const bucketName = "notice-files";
+
+        // Upload to Supabase Storage bucket 'notice-files' preserving Content-Type
+        const { error: uploadError } = await supabase.storage
+          .from(bucketName)
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error("Supabase Storage upload error:", uploadError);
+          return res.status(500).json({
+            success: false,
+            error: uploadError.message || "Failed to upload file to Supabase Storage bucket 'notice-files'.",
+          });
+        }
+
+        // Retrieve public URL from Supabase Storage
+        const { data: publicUrlData } = supabase.storage
+          .from(bucketName)
+          .getPublicUrl(storagePath);
+
+        const publicUrl = publicUrlData?.publicUrl;
+
+        if (!publicUrl) {
+          return res.status(500).json({
+            success: false,
+            error: "Failed to generate public URL for uploaded file from Supabase Storage.",
+          });
+        }
+
+        return res.json({
+          success: true,
+          publicUrl,
+          path: storagePath,
+        });
+      } catch (uploadErr: any) {
+        console.error("Supabase storage upload exception:", uploadErr?.message || uploadErr);
+        return res.status(500).json({
+          success: false,
+          error: uploadErr?.message || "Internal server error during storage upload.",
+        });
+      }
+    });
   });
 
   // Vite middleware in dev, static files in prod
